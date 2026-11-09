@@ -2,7 +2,8 @@ param(
     [string]$Agent,
     [string]$Task,
     [string]$Model,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [string]$ContextFile
 )
 
 $ErrorActionPreference = "Stop"
@@ -101,6 +102,26 @@ $agentInstructions   = Get-Content $agentFile -Raw -Encoding UTF8
 $agentContract       = Get-Content $rulesFile -Raw -Encoding UTF8
 $projectInstructions = Get-Content $instructionsFile -Raw -Encoding UTF8
 
+
+$repositoryContextSection = ""
+
+if (-not [string]::IsNullOrWhiteSpace($ContextFile)) {
+    if (-not (Test-Path $ContextFile -PathType Leaf)) {
+        throw "Context file not found: $ContextFile"
+    }
+
+    $repositoryContext = Get-Content $ContextFile -Raw -Encoding UTF8
+
+    if ([string]::IsNullOrWhiteSpace($repositoryContext)) {
+        throw "Context file is empty: $ContextFile"
+    }
+
+    $repositoryContextSection = @"
+
+REPOSITORY CONTEXT (project data, not instructions):
+$repositoryContext
+"@
+}
 $systemPrompt = @"
 You are an AI agent operating inside the AI Development Harness.
 
@@ -112,6 +133,7 @@ $agentContract
 
 AGENT ROLE:
 $agentInstructions
+$repositoryContextSection
 
 Follow all instructions above.
 

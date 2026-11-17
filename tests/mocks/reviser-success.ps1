@@ -7,6 +7,7 @@ param(
 
     [Parameter(Mandatory = $true)]
     [string]$ReviewFile,
+    [string]$Mode = "requirements",
 
     [string]$Model,
 

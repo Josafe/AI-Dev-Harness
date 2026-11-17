@@ -1,4 +1,14 @@
+﻿# Generated specifications and test artifacts
 specs/smoke-*
 specs/insufficient-*
 specs/test-*
 specs/mock-*
+specs/mode-probe-*
+
+# Runtime logs and model telemetry
+logs/
+
+# Temporary backups
+*.bak
+*.bak-*
+*.bak.*

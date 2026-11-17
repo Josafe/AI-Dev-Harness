@@ -4,6 +4,7 @@ param(
 
     [Parameter(Mandatory = $true)]
     [string]$SpecFile,
+    [string]$Mode = "requirements",
 
     [string]$Model,
 

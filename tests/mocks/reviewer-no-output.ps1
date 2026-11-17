@@ -1,6 +1,7 @@
 param(
     [string]$Task,
     [string]$SpecFile,
+    [string]$Mode = "requirements",
     [string]$Model,
     [string]$OutputFile
 )

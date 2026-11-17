@@ -7,6 +7,9 @@ param(
 
     [string]$Model,
 
+    [ValidateSet("requirements", "baseline", "documentation")]
+    [string]$Mode = "requirements",
+
     [string]$RunnerScript,
     [string]$ValidatorScript,
     [string]$ReviewerScript,
@@ -97,6 +100,15 @@ Write-Host ""
 Write-Host "=== Specification Workflow ===" -ForegroundColor Cyan
 Write-Host "Name  : $Name"
 Write-Host "Model : $modelLabel"
+Write-Host "Mode  : $Mode"
+
+$workflowTask = @"
+SPECIFICATION MODE (AUTHORITATIVE):
+$Mode
+
+ORIGINAL USER REQUEST:
+$Task
+"@
 Write-Host ""
 
 # ------------------------------------------------------------
@@ -109,7 +121,7 @@ Write-Host ""
 Remove-Item $specFile -Force -ErrorAction SilentlyContinue
 & $runner `
     -Agent "spec" `
-    -Task $Task `
+    -Task $workflowTask `
     @modelArgs `
     -OutputFile $specFile
 
@@ -192,6 +204,7 @@ for ($revision = 0; $revision -le $maxRevisions; $revision++) {
     Remove-Item $currentReviewFile -Force -ErrorAction SilentlyContinue
 
     & $reviewer `
+        -Mode $Mode `
         -Task $Task `
         -SpecFile $currentSpecFile `
         @modelArgs `
@@ -280,6 +293,7 @@ for ($revision = 0; $revision -le $maxRevisions; $revision++) {
 
     Remove-Item $nextSpecFile -Force -ErrorAction SilentlyContinue
     & $reviser `
+        -Mode $Mode `
         -Task $Task `
         -SpecFile $currentSpecFile `
         -ReviewFile $currentReviewFile `

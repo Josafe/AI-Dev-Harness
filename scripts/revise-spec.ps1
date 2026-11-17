@@ -2,6 +2,8 @@ param(
     [Parameter(Mandatory = $true)][string]$Task,
     [Parameter(Mandatory = $true)][string]$SpecFile,
     [Parameter(Mandatory = $true)][string]$ReviewFile,
+    [ValidateSet("requirements", "baseline", "documentation")]
+    [string]$Mode = "requirements",
     [string]$Model,
     [string]$OutputFile
 )
@@ -54,6 +56,7 @@ if ([string]::IsNullOrWhiteSpace($reviewContent)) { throw "Review file is empty.
 Write-Host ""
 Write-Host "=== Specification Reviser ===" -ForegroundColor Cyan
 Write-Host "Model : $Model"
+Write-Host "Mode  : $Mode"
 Write-Host "Spec  : $SpecFile"
 Write-Host "Review: $ReviewFile"
 Write-Host ""
@@ -69,6 +72,9 @@ $agentContract
 
 AGENT ROLE:
 $agentInstructions
+
+SPECIFICATION MODE (AUTHORITATIVE):
+$Mode
 
 ORIGINAL USER REQUEST:
 $Task
@@ -95,9 +101,18 @@ Rules, in order:
    dependencies, security or validation rules, UI behavior, error handling,
    implementation details, architecture decisions, or facts about the
    existing system. Use only context supported by the supplied input.
-6. If removing unsupported content leaves no acceptance criterion, write one
-   acceptance criterion that restates the complete behavior requested by the
-   user, using only the user's own words. Do not add behavior.
+6. Apply the acceptance-criteria rules for the authoritative specification mode:
+   - requirements: retain or revise criteria only when supported by
+     requested behavior. Do not force criteria when none are supported
+     or necessary.
+   - baseline: include criteria only for behavior explicitly authorized
+     for preservation. Do not turn unrelated implementation details
+     into criteria.
+   - documentation: do not create acceptance criteria to verify
+     descriptive implementation facts. Use None when no independent
+     requirement needs acceptance criteria.
+   - mixed requests: criteria may cover explicit requested changes and
+     explicitly authorized preservation only.
 7. Every requirement must have a Source of USER, PROJECT, FACT or ASSUMPTION.
 
 The output MUST contain exactly these headings, in this order:
@@ -115,8 +130,15 @@ The output MUST contain exactly these headings, in this order:
 
 If a section has no supported content, write exactly: None
 
-Before answering, verify that all 10 headings are present, that at least one
-FR-XXX and one AC-XXX exist, and that nothing new was introduced.
+Before answering, verify that all 10 headings are present and that nothing
+unsupported or new was introduced.
+
+Verify that Functional Requirements, Non-Functional Requirements and
+Acceptance Criteria contain only entries justified by the authoritative
+specification mode and supplied evidence.
+
+Do not require FR-XXX, NFR-XXX or AC-XXX entries when the selected mode and
+available evidence do not support them. Write None for empty sections.
 
 Return ONLY the complete revised specification.
 "@

@@ -40,23 +40,24 @@ Do not infer project context, existing functionality, or user intent that has no
 ## 2. Source Classification
 
 The only permitted source labels are:
+
 - `USER`
 - `PROJECT`
 - `FACT`
 - `ASSUMPTION`
-- `RECOMMENDATION`
 
-Flag invalid source labels.
+Flag any other source label as invalid.
 
 Check that source classifications accurately represent the evidence. In particular:
+
 - `USER` requires explicit user support or an unambiguous implication of the request.
-- `PROJECT` requires evidence in provided project documentation or established project behavior.
+- `PROJECT` requires explicit project documentation, an established project policy, or an explicit task constraint establishing that the behavior must be implemented or preserved. Existing implementation behavior alone is insufficient.
 - `FACT` requires established factual support.
 - `ASSUMPTION` identifies a necessary but unconfirmed inference.
-- `RECOMMENDATION` identifies an optional suggestion, not approved scope.
 
-Do not accept a claim merely because it has been labelled `ASSUMPTION`, `PROJECT`, or `RECOMMENDATION`.
+Recommendations may be evaluated as optional content, but `RECOMMENDATION` is not a valid source label and must not be used as a source classification.
 
+Do not accept a claim merely because it has been labelled `ASSUMPTION` or `PROJECT`.
 ## 3. Detect Unsupported Scope
 
 Identify behavior that is not requested, unambiguously implied, or supported by project context.
@@ -265,6 +266,67 @@ database behavior, or implementation decisions unless requested.
 
 An Open Question is justified only when resolving it is necessary
 to define explicitly requested behavior faithfully.
+
+
+## Specification Modes
+
+The specification mode is authoritative.
+Apply the rules for the explicitly provided mode when evaluating the specification.
+Mode-specific rules take precedence over general review rules whenever they conflict.
+Apply general review rules only when they are compatible with the selected mode.
+Do not assume a mode based on the presence of repository context or implementation evidence.
+
+### Requirements Mode
+
+- Evaluate whether the specification faithfully captures the requested behavior.
+- Existing implementation details are context, not requirements, unless an
+  established project requirement explicitly makes them mandatory.
+- Do not require preservation of unrelated existing behavior.
+- Apply the normal functional coverage and acceptance criteria rules.
+- Do not invent requirements to make the specification more complete.
+
+### Baseline Mode
+
+- Verify that preservation of existing behavior was explicitly authorized.
+- Distinguish the authorization to preserve behavior from evidence describing
+  what the implementation currently does.
+- Accept preservation requirements only when they are traceable to that
+  authorization.
+- Verify that implementation observations are supported by the available
+  repository evidence.
+- Do not treat every discovered implementation detail as part of the baseline.
+- Do not infer guarantees or behavior that the evidence does not establish.
+- Apply functional coverage and acceptance criteria rules only to behavior
+  that is explicitly included in the authorized baseline.
+
+### Documentation Mode
+
+- Evaluate the specification as descriptive documentation of an existing
+  implementation, not as a list of requirements for future implementation.
+- Treat verified implementation behavior as factual context.
+- Source code, scripts, tests, and configuration may support factual
+  descriptions, but do not by themselves establish requirements.
+- Do not flag the absence of Functional Requirements, Non-Functional
+  Requirements, or Acceptance Criteria as a defect.
+- Do not demand acceptance criteria to verify descriptive facts.
+- Do not convert implementation observations into requirements merely
+  because they are documented or technically relevant.
+- Check that factual descriptions are supported by the supplied evidence.
+- Flag claims that exceed the available evidence, including unverified
+  guarantees, inferred behavior, and unsupported implementation claims.
+- Do not imply that documented behavior is approved, required, or guaranteed
+  to remain unchanged.
+- Use `None` for empty requirement sections when appropriate.
+
+### Mixed Requests
+
+- When a task documents existing behavior and requests a behavioral change,
+  evaluate the requested change as a requirement.
+- Existing behavior belongs in Context unless its preservation is explicitly
+  authorized.
+- Do not treat unrelated existing behavior as part of the required baseline.
+- Evaluate the requested change against the original user request and the
+  available evidence.
 
 ## Output Format
 

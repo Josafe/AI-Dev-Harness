@@ -125,6 +125,63 @@ The agent must follow this process:
 
 ---
 
+
+## Specification Modes
+
+The selected specification mode is authoritative. Apply its rules throughout
+the revision process. These rules take precedence over general revision rules
+when they conflict.
+
+### Requirements Mode
+
+- Preserve requirements supported by the original request and established
+  project requirements.
+- Remove unsupported requirements and acceptance criteria.
+- Preserve acceptance criteria that verify the complete requested behavior.
+- Do not invent requirements or acceptance criteria to fill empty sections.
+- Do not assume existing implementation behavior must be preserved.
+
+### Baseline Mode
+
+- Preserve only existing behavior whose preservation was explicitly authorized.
+- Use repository evidence to describe the existing behavior accurately.
+- Keep factual implementation observations distinct from preservation
+  requirements.
+- Do not convert every discovered implementation detail into a requirement.
+- Do not infer guarantees or behavior that the available evidence does not
+  establish.
+- Keep preservation requirements traceable to the explicit authorization.
+- Acceptance criteria must verify only the explicitly authorized behavior
+  being preserved.
+
+### Documentation Mode
+
+- Treat the task as descriptive documentation of an existing implementation.
+- Preserve verified implementation facts in the Context section.
+- Do not convert implementation observations into functional or
+  non-functional requirements.
+- Do not create acceptance criteria merely to verify documented facts.
+- Do not create requirements or acceptance criteria to satisfy structural
+  expectations.
+- Use `None` for Functional Requirements, Non-Functional Requirements,
+  and Acceptance Criteria when no independent explicit requirements exist.
+- Do not turn unknown behavior into assumptions or factual claims.
+- Do not imply that documented behavior is approved, required, or guaranteed
+  to remain unchanged.
+- Remove unsupported factual claims, but do not replace them with invented
+  behavior.
+- Preserve the required specification headings even when their content is
+  `None`.
+
+### Mixed Requests
+
+- Describe relevant existing behavior in Context.
+- Specify only the behavioral changes explicitly requested by the user.
+- Do not assume unrelated existing behavior must be preserved.
+- Keep existing facts distinct from intended behavior.
+- Apply acceptance criteria only to the requested changes or explicitly
+  authorized preservation requirements.
+
 ## Output Format
 
 Return ONLY the complete revised specification.
@@ -163,7 +220,16 @@ The output must follow this structure:
 
 ## Assumptions
 
-Every applicable requirement must include:
+### Structural Output Rules
+
+- The section headings above must be preserved.
+- Requirement and acceptance criterion entries are conditional on the selected specification mode and the available supported content.
+- The identifiers `FR-001`, `NFR-001`, and `AC-001` are structural examples, not mandatory entries.
+- When a section has no supported content, write `None`.
+- Do not create identifiers or placeholder requirements merely to populate a section.
+- Every applicable requirement must include a valid source classification.
+
+For example:
 
 **Source:** USER
 
@@ -200,30 +266,34 @@ Original request:
 
 "Create a specification for a simple user registration feature with email and password."
 
-Valid revision:
+Valid revision in `requirements` mode:
 
 ### FR-001
 
 **Source:** USER
 
-Users can provide an email address during registration.
+Users can register using an email address and a password.
 
-### FR-002
+The requirement represents the complete requested registration behavior rather than splitting it into intermediate input steps.
+
+A corresponding acceptance criterion may be:
+
+### AC-001
 
 **Source:** USER
 
-Users can provide a password during registration.
+A user can successfully register using an email address and a password.
 
 The following must NOT be invented:
 
 - Email validation
 - Password validation
 - Password length
-- Duplicate users
+- Duplicate user handling
 - Confirmation messages
 - Error messages
-- Security requirements
-- Password storage
+- Additional security requirements
+- Password storage behavior
 - Database requirements
 - Performance requirements
 - UI requirements
@@ -233,6 +303,7 @@ The following must NOT be invented:
 
 unless the original request explicitly requires them.
 
+This example illustrates `requirements` mode only. It does not establish mandatory requirements or acceptance criteria for `documentation` or `baseline` modes.
 ### Context Discipline
 
 Do not invent facts about the existing system.
@@ -276,24 +347,41 @@ unless the original request explicitly depends on those decisions.
 
 ### Acceptance Criteria Discipline
 
-Acceptance criteria must represent explicitly requested behavior.
+Acceptance criteria must be consistent with the selected specification mode.
 
-Do not invent acceptance criteria for:
+#### Requirements Mode
 
-- Confirmation messages
-- Validation
-- Error handling
-- Security
-- Storage
-- UI behavior
+- Acceptance criteria must verify explicitly requested behavior and established project requirements.
+- Each acceptance criterion must be traceable to a supported requirement.
+- Verify the complete requested behavior, not merely an input or intermediate step.
+- Do not invent acceptance criteria for behavior that was not requested.
+- If no supported behavior requires acceptance criteria, use `None`.
 
-For a simple request, the minimum acceptance criteria should directly verify the explicitly requested functionality.
+#### Baseline Mode
+
+- Acceptance criteria must verify only behavior explicitly authorized for preservation.
+- Each criterion must be supported by evidence of the existing implementation and traceable to the preservation authorization.
+- Do not create criteria for unrelated implementation details.
+- Do not infer guarantees that the available evidence does not establish.
+- If no behavior has been explicitly authorized for preservation, use `None`.
+
+#### Documentation Mode
+
+- Do not create acceptance criteria merely to verify documented implementation facts.
+- Do not convert observations about existing behavior into acceptance criteria.
+- Use `None` unless independent, explicit requirements are also part of the task.
+
+#### Mixed Requests
+
+- Create acceptance criteria only for explicitly requested behavioral changes or explicitly authorized preservation requirements.
+- Existing behavior documented as context does not require acceptance criteria.
+- If neither requested changes nor authorized preservation requirements need verification, use `None`.
 
 ### Structural Preservation
 
 The revised specification must remain structurally valid.
 
-Do not remove required sections or required requirement identifiers merely because their contents were unsupported.
+Do not remove required sections or required requirement identifiers merely because their contents are unsupported.
 
 If a required section has no supported content, use:
 
@@ -303,15 +391,15 @@ Do not invent requirements solely to populate a section.
 
 ### Minimal Acceptance Criterion
 
-Acceptance criteria must verify the complete explicitly requested behavior, not merely an input or intermediate step.
+When acceptance criteria are applicable, they must verify the complete behavior represented by their corresponding requirement.
 
-When the original request describes a feature or action, the acceptance criterion must preserve that feature or action.
+Do not weaken requested behavior into an intermediate step.
 
-For example, for:
+For example, in `requirements` mode, consider this request:
 
 "Create a specification for a simple user registration feature with email and password."
 
-the minimum valid acceptance criterion is:
+A valid acceptance criterion is:
 
 ### AC-001
 
@@ -319,15 +407,15 @@ the minimum valid acceptance criterion is:
 
 A user can register using an email address and a password.
 
-This directly represents the requested registration feature without adding implementation details.
+This verifies the requested registration behavior without adding implementation details.
 
-Do NOT weaken the requested behavior into an intermediate step.
-
-For example, this is insufficient:
+The following would be insufficient:
 
 "A user can provide an email address and a password during registration."
 
-because it verifies only data entry rather than the requested registration behavior.
+It verifies only data entry rather than the requested registration behavior.
+
+This example applies only when the registration behavior is explicitly requested. It does not establish a universal requirement to create acceptance criteria in every specification mode.
 
 Do NOT add:
 
@@ -340,4 +428,4 @@ Do NOT add:
 - Database behavior
 - Authentication implementation
 
-unless explicitly requested.
+unless explicitly requested or explicitly authorized by the selected specification mode.

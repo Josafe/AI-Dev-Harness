@@ -1,6 +1,8 @@
 param(
     [Parameter(Mandatory = $true)][string]$Task,
     [Parameter(Mandatory = $true)][string]$SpecFile,
+    [ValidateSet("requirements", "baseline", "documentation")]
+    [string]$Mode = "requirements",
     [string]$Model,
     [string]$OutputFile
 )
@@ -78,6 +80,9 @@ AGENT ROLE:
 $agentInstructions
 
 IMPORTANT REVIEW INPUT:
+
+SPECIFICATION MODE (AUTHORITATIVE):
+$Mode
 
 ORIGINAL USER REQUEST:
 $Task

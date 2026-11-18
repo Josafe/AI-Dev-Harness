@@ -4,7 +4,8 @@
     "agentModels": {
             "spec": "deepseek-r1:32b",
             "spec-reviewer": "deepseek-r1:32b",
-            "spec-reviser": "qwen2.5-coder:32b"
+            "spec-reviser": "qwen2.5-coder:32b",
+            "developer": "qwen2.5-coder:32b"
             },
     "options": {
         "temperature": 0.2,

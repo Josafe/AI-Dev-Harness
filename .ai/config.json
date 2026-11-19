@@ -1,11 +1,11 @@
 {
     "ollamaUrl": "http://localhost:11434",
-    "defaultModel": "qwen2.5-coder:32b",
+    "defaultModel": "qwen3.5:9b",
     "agentModels": {
-            "spec": "deepseek-r1:32b",
-            "spec-reviewer": "deepseek-r1:32b",
-            "spec-reviser": "qwen2.5-coder:32b",
-            "developer": "qwen2.5-coder:32b"
+            "spec": "qwen3.5:9b",
+            "spec-reviewer": "qwen3.6:35b",
+            "spec-reviser": "qwen3.5:9b",
+            "developer": "qwen3.6:35b"
             },
     "options": {
         "temperature": 0.2,

@@ -4,7 +4,7 @@
     "agentModels": {
             "spec": "qwen3.5:9b",
             "spec-reviewer": "qwen3.6:35b",
-            "spec-reviser": "qwen3.5:9b",
+            "spec-reviser": "qwen3.6:35b",
             "developer": "qwen3.6:35b"
             },
     "options": {

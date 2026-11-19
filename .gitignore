@@ -13,3 +13,8 @@ logs/
 *.bak
 *.bak-*
 *.bak.*
+
+# Live validation outputs and specs of unrelated projects
+specs/portfolio-*
+specs/validation2-*
+specs/model-validation-*

@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 1: configuration registry v2
-**Status:** Draft (2026-11-20), first version. Not approved and not implemented. Open Questions OQ-101 to OQ-106 need an answer before implementation starts.
+**Status:** Draft (2026-11-20), revision 2. Not approved and not implemented. OQ-101 to OQ-106 are resolved (OD-106 to OD-111) and the profile assignment is decided (OD-112); there are no open questions.
 **Applies to:** AI-Dev-Harness. Baseline: commit `5ffc33f` (tag `phase0-done`).
 **Requirement ID scheme:** Phase 1 uses `FR-1nn`, `NFR-1nn`, `AC-1nn`. Phase 0 IDs are cited as "Phase 0 NFR-006" and similar (`specs/harness-phase-0-defect-corrections.md`).
 
@@ -11,7 +11,7 @@ Add a configuration registry v2 to `.ai/config.json` (`schemaVersion: 2`) with n
 
 ## Context
 
-**Origin.** The Phase 1 section, XR-01 (backward compatibility) and XR-02 (how the model and profile are chosen) of `docs/roadmap/modernization-roadmap.md`, narrowed here (OQ-102), and the decisions of 2026-11-20 (OD-101 to OD-105).
+**Origin.** The Phase 1 section, XR-01 (backward compatibility) and XR-02 (how the model and profile are chosen) of `docs/roadmap/modernization-roadmap.md`, narrowed here (OD-107), and the decisions of 2026-11-20 (OD-101 to OD-112).
 
 **Current behavior** (FACT, verified in the repository at `5ffc33f`):
 
@@ -22,7 +22,7 @@ Add a configuration registry v2 to `.ai/config.json` (`schemaVersion: 2`) with n
 - **Literals.** The only model names found in `scripts/*.ps1` are the default `-Models` of `benchmark-models.ps1`: `qwen2.5-coder:7b`, `qwen2.5-coder:32b`, `deepseek-r1:32b`.
 - **Test seam.** `scripts/test-agent-telemetry.ps1` runs the real scripts in a temporary harness root with a fake `Invoke-RestMethod` and four guards that make a real request impossible (Phase 0 FR-018).
 
-**Out of scope.** Phase 2: streaming, `num_predict`, transport, budget enforcement, any use of `think` or of the `thinking` response field (OQ-102). Phase 3: the unified CLI, `-Profile` on `specify.ps1`, manifests, background runs (OQ-103). Not changed at all: prompts, `.ai/agents/*.md`, telemetry, the timeout and the models in use (Phase 0 deferred O-01).
+**Out of scope.** Phase 2: streaming, `num_predict`, transport, budget enforcement, any use of `think` or of the `thinking` response field, and the roadmap's `reasoning`, `transport`, `agents.<A>.promptFile`, `defaults.charsPerToken` and `tests` keys (OD-107). Phase 3: the unified CLI, `-Profile` on `specify.ps1`, manifests, background runs (OD-108). Not changed at all: prompts, `.ai/agents/*.md`, telemetry, the timeout and the models in use (Phase 0 deferred O-01).
 
 ## Functional Requirements
 
@@ -35,11 +35,11 @@ Add a configuration registry v2 to `.ai/config.json` (`schemaVersion: 2`) with n
 | Key | Content |
 |---|---|
 | `ollama` | `url` (default `http://localhost:11434`), `healthTimeoutSec` (default 15) |
-| `defaults` | `profile` (the default profile name); `options` (an object); `timeoutSec` (fallback for profiles, default 600); `safetyMarginRatio` (default 0.10); `stripThinking` (default true, OQ-101) |
+| `defaults` | `profile` (the default profile name); `options` (an object); `timeoutSec` (fallback for profiles, default 600); `safetyMarginRatio` (default 0.10); `stripThinking` (default true, OD-106) |
 | `profiles` | `<name>`: `model` (required), `contextWindow`, `timeoutSec`, `reservedOutputTokens`, `think` (`true`, `false` or `"default"`; absent means `"default"`), `options` |
 | `agents` | `<name>`: `profile` |
 
-The initial profiles are `fast` (`qwen3.5:9b`, `reservedOutputTokens` 4096) and `deep` (`qwen3.6:35b`, `reservedOutputTokens` 6144) (OD-103, OD-105). The v2 translation of the current v1 file is the example below; this spec task does not edit `.ai/config.json`.
+The profiles of the migrated `.ai/config.json` are `fast`, `deep` and `review` (OD-103, OD-105, OD-112; table below). The example that follows is the strict v2 translation of the current v1 file (profiles `fast` and `deep`, no `review`, same options). It is the fixture `config-v2-current.json`, so that the golden equality of AC-101 stays exact. This spec task does not edit `.ai/config.json`.
 
 ```json
 {
@@ -51,7 +51,7 @@ The initial profiles are `fast` (`qwen3.5:9b`, `reservedOutputTokens` 4096) and 
     "fast": { "model": "qwen3.5:9b",  "contextWindow": 16384, "timeoutSec": 900,
               "reservedOutputTokens": 4096, "think": "default" },
     "deep": { "model": "qwen3.6:35b", "contextWindow": 16384, "timeoutSec": 900,
-              "reservedOutputTokens": 6144, "think": "default" }
+              "reservedOutputTokens": 8192, "think": "default" }
   },
   "agents": { "spec": { "profile": "fast" }, "spec-reviser": { "profile": "deep" },
               "spec-reviewer": { "profile": "deep" }, "developer": { "profile": "deep" } }
@@ -59,6 +59,24 @@ The initial profiles are `fast` (`qwen3.5:9b`, `reservedOutputTokens` 4096) and 
 ```
 
 **Effective options** of a profile: `defaults.options`, then `profile.options`, then `num_ctx` set to `contextWindow` when `contextWindow` is present. In the example, this equals the v1 `options` (`temperature` 0.2, `num_ctx` 16384).
+
+**Profiles and agents of the migrated `.ai/config.json` (OD-112, WP-1B):**
+
+| Profile | Model | `think` | `reservedOutputTokens` | Profile `options` |
+|---|---|---|---|---|
+| `fast` | `qwen3.5:9b` | `"default"` | 4096 | none |
+| `deep` | `qwen3.6:35b` | `"default"` | 8192 | none |
+| `review` | `qwen3.6:35b` | `"default"` | 8192 | `temperature` 0.1, `seed` 42 |
+
+All three profiles keep `contextWindow` 16384 and `timeoutSec` 900; `defaults` is as in the example. Agents: `spec` uses `fast`; `spec-reviewer` uses `review`; `spec-reviser` and `developer` use `deep`; `defaults.profile` is `fast`. The effective options of `review` are `temperature` 0.1, `seed` 42 and `num_ctx` 16384.
+
+**Rationale** (FACT unless marked):
+
+- The 9B model is unreliable as a reviser: 1 good output in 4 attempts (`docs/audits/2026-11-19-model-validation-2.md`, check B; `docs/audits/2026-11-19-model-validation.md`). So the reviser and the developer use the 35B model.
+- The reviewer needs stable verdicts. In the live runs of 2026-11-20 one fixture gave opposite verdicts in 1 of 5 runs, and one reviewer call produced 5,076 output tokens. (Reported by the user from those runs; no repository document records them.) So `review` pins `temperature` and `seed`, and `reservedOutputTokens` for `deep` and `review` is raised from 6144 to 8192, which supersedes OD-105 for those two profiles; `fast` stays at 4096.
+- With this assignment a spec, review and revise run swaps models only once: the 9B model for `spec`, then the 35B model for the reviewer and the reviser.
+- `review` uses `temperature` 0.1 and not 0, because greedy decoding can loop with reasoning models (ASSUMPTION; to be measured later, not in Phase 1).
+- `think` is only stored in Phase 1, and every profile has `"default"`. The intended later value for the reviser is `false`; it is noted here, not configured.
 
 ### FR-102 — One loader that returns a normalized v2 object
 
@@ -102,7 +120,7 @@ The initial profiles are `fast` (`qwen3.5:9b`, `reservedOutputTokens` 4096) and 
 **Rules, in order:**
 
 1. `-Model` together with `-Profile` is an error that starts with the token `invalid_arguments:` (OD-102).
-2. `-Model M`: the model is `M`; `modelSource` is `explicit-model`. The parameters come from the one profile whose `model` equals `M`, if exactly one does; otherwise from agent `A`'s profile, and, if no profile has that model, the warning code `unregistered_model_override` is added (OQ-104).
+2. `-Model M`: the model is `M`; `modelSource` is `explicit-model`. The parameters come from the one profile whose `model` equals `M`, if exactly one does; otherwise from agent `A`'s profile, and, if no profile has that model, the warning code `unregistered_model_override` is added, in the record only and never printed (OD-109).
 3. `-Profile P`: `P` must exist, otherwise `registry_invalid:`; `modelSource` is `explicit-profile`.
 4. `AI_HARNESS_MODEL` set and not blank: handled like rule 2; `modelSource` is `env`.
 5. `agents.<A>.profile`: `modelSource` is `agent`.
@@ -124,7 +142,7 @@ The initial profiles are `fast` (`qwen3.5:9b`, `reservedOutputTokens` 4096) and 
 - `run-agent.ps1`, `review-spec.ps1` and `revise-spec.ps1` accept a new optional `-Profile`, resolve with `Resolve-HarnessExecution`, and take `timeoutSec`, `options`, `stripThinking` and the Ollama URL from the record and the registry. `run-agent.ps1` also uses `ollama.healthTimeoutSec` (default 15) for its `/api/tags` check. Their other parameters, exit codes, console output and output files do not change.
 - `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` read the same values from the registry and the record.
 - `test-all.ps1` and `test-spec-integration.ps1` resolve their model through the same resolution as production. The `ModelAgent` field and its contract do not change.
-- `specify.ps1` is not changed (OQ-103).
+- `specify.ps1` is not changed (OD-108).
 - A configuration error (`registry_invalid:`, `invalid_arguments:`) ends each script with the exit code it already gives for a configuration error (1 for `run-agent.ps1`, 2 for `review-spec.ps1`, non-zero for `revise-spec.ps1`), before any request to Ollama, writing no telemetry.
 
 ### FR-107 — No model-name literals in scripts
@@ -157,7 +175,7 @@ Every new or changed suite follows Phase 0 NFR-002 and NFR-006: it runs without 
 
 **Source:** USER
 
-With a v1 configuration, every agent resolves to exactly the model it resolves to today, under no override, `-Model`, `AI_HARNESS_MODEL`, and `-Model` with `AI_HARNESS_MODEL`; and the effective `timeoutSec`, `options`, `stripThinking` and Ollama URL equal today's values. The parameters, exit codes, console output and output files of every existing script, the environment variables `AI_HARNESS_MODEL` and `AI_HARNESS_RUN_ID`, the telemetry files and schema, the `test-all.ps1` contract (including `ModelAgent`) and the prompts sent to models do not change. The only intentional changes are the optional `-Profile` and the new benchmark default. Under a v1 configuration the harness prints nothing new.
+With a v1 configuration, every agent resolves to exactly the model it resolves to today, under no override, `-Model`, `AI_HARNESS_MODEL`, and `-Model` with `AI_HARNESS_MODEL`; and the effective `timeoutSec`, `options`, `stripThinking` and Ollama URL equal today's values. The parameters, exit codes, console output and output files of every existing script, the environment variables `AI_HARNESS_MODEL` and `AI_HARNESS_RUN_ID`, the telemetry files and schema, the `test-all.ps1` contract (including `ModelAgent`) and the prompts sent to models do not change. The only intentional changes are the optional `-Profile`, the new benchmark default and, once `.ai/config.json` is migrated to v2 (WP-1B), the sampling options of `spec-reviewer`, which gain `temperature` 0.1 and `seed` 42 (OD-112, AC-113). Under a v1 configuration the harness prints nothing new.
 
 ### NFR-104 — Change footprint
 
@@ -274,13 +292,27 @@ Verifies: NFR-103, NFR-104.
 
 `git diff --stat` against `5ffc33f` lists only files in "Affected Files". The diff has no change in the system or user prompt strings of `review-spec.ps1` and `revise-spec.ps1`, and `.ai/agents/*`, `.ai/rules/*` and `scripts/lib/telemetry.ps1` are unmodified. `.ai/config.json` changes only in WP-1B.
 
+### AC-113 — The migrated `.ai/config.json` keeps every model and changes only the reviewer's options
+
+**Source:** USER
+
+Verifies: FR-101, NFR-103.
+
+With the migrated v2 `.ai/config.json` (WP-1B), for `spec`, `spec-reviewer`, `spec-reviser`, `developer` and one agent with no registry entry:
+
+- `Resolve-HarnessExecution` gives the same model as under `config-v1-current.json`, and the same `timeoutSec`, `stripThinking` and Ollama URL.
+- The effective options are identical to v1, except for `spec-reviewer`, whose effective options differ only by `temperature` 0.1 (instead of 0.2) and `seed` 42 (added). This change is intentional (OD-112).
+- The file has exactly the profiles `fast`, `deep` and `review` and the agent assignments of FR-101 (`spec` to `fast`, `spec-reviewer` to `review`, `spec-reviser` and `developer` to `deep`, `defaults.profile` `fast`); `reservedOutputTokens` is 4096, 8192 and 8192; `think` is `"default"` in all three.
+
+The expected values are read from the raw JSON of `config-v1-current.json`, not from the code under test, and the check contains no model name (AC-107).
+
 ## Traceability Matrix
 
 This table is the inverse of the `Verifies:` lines above. The two must stay identical.
 
 | Requirement | Acceptance criteria |
 |---|---|
-| FR-101 | AC-102 |
+| FR-101 | AC-102, AC-113 |
 | FR-102 | AC-101, AC-102 |
 | FR-103 | AC-103, AC-104 |
 | FR-104 | AC-101, AC-105, AC-106 |
@@ -290,7 +322,7 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | FR-108 | AC-103, AC-109 |
 | NFR-101 | AC-111 |
 | NFR-102 | AC-103, AC-104, AC-107, AC-111 |
-| NFR-103 | AC-101, AC-102, AC-110, AC-111, AC-112 |
+| NFR-103 | AC-101, AC-102, AC-110, AC-111, AC-112, AC-113 |
 | NFR-104 | AC-112 |
 
 ## Affected Files
@@ -301,12 +333,12 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | `scripts/run-agent.ps1`, `review-spec.ps1`, `revise-spec.ps1` (modified) | Add `-Profile`, resolve through the registry, read timeouts and options from it. Prompts unchanged. | FR-104, FR-106 |
 | `scripts/benchmark-models.ps1` (modified) | Remove the literal default `-Models`; build it from the registry. | FR-107 |
 | `scripts/test-all.ps1`, `scripts/test-spec-integration.ps1` (modified) | Resolve the live-suite model through the registry resolution. | FR-106 |
-| `.ai/config.json` (modified) | WP-1B only, with human approval: rewrite as v2 (OQ-105). | FR-101 |
+| `.ai/config.json` (modified) | WP-1B only, last commit, with human approval: rewrite as v2 with the profiles `fast`, `deep` and `review` (OD-110, OD-112). | FR-101 |
 | `scripts/test-registry.ps1` (new) | WP-1A, in-process: golden table, conversion, validation, selection rules, `think` | AC-101, AC-102, AC-103, AC-105 (function part), AC-106, AC-109 (record part) |
-| `scripts/test-registry-callsites.ps1` (new) | WP-1B: child-process cases with the fake-host guards, the literal scan, the benchmark helper, the live-suite model | AC-104, AC-105, AC-107, AC-108, AC-110 |
-| `tests/fixtures/config-v1-current.json`, `config-v2-current.json` (new) | Frozen v1 file and its v2 translation | AC-101, AC-102, AC-110 |
+| `scripts/test-registry-callsites.ps1` (new) | WP-1B: child-process cases with the fake-host guards, the literal scan, the benchmark helper, the live-suite model | AC-104, AC-105, AC-107, AC-108, AC-110, AC-113 |
+| `tests/fixtures/config-v1-current.json`, `config-v2-current.json` (new) | Frozen v1 file and its strict v2 translation (no `review` profile) | AC-101, AC-102, AC-110 |
 | `tests/fixtures/config-v1-minimal.json`, `config-v2-*.json` (new) | One per invalid rule, plus warnings and `think` cases, with synthetic model names | AC-102, AC-103, AC-106 |
-| `tests/fixtures/historical-model-names.txt` (new) | The three historical model names, as data | AC-107 |
+| `tests/fixtures/historical-model-names.txt` (new, WP-1B) | The three historical model names, as data | AC-107 |
 
 **Not modified:** `specify.ps1`, `validate-spec.ps1`, `scan-repository.ps1`, `build-context.ps1`, `lib/telemetry.ps1`, `.ai/agents/*`, `.ai/rules/*`, `AGENTS.md`, `README.md`, and all Phase 0 suites, mocks and fixtures.
 
@@ -318,7 +350,7 @@ Two work packages, each one commit. Run `scripts/test-all.ps1` offline after eac
 |---|---|---|---|
 | 0 | Record the baseline: offline `test-all` at `5ffc33f`. Freeze `config-v1-current.json` from `.ai/config.json`. | Phase 0 done | Baseline recorded |
 | 1 | **WP-1A Registry library.** `Get-HarnessRegistry`, `Resolve-HarnessExecution`, the `Resolve-HarnessModel` wrapper, fixtures and `test-registry.ps1`. No call site changes. | Step 0 | AC-101, AC-102, AC-103, AC-105 (function part), AC-106, AC-109 (record part), AC-111 |
-| 2 | **WP-1B Call sites and migration.** FR-106 and FR-107, `test-registry-callsites.ps1`, then (after approval) the v2 rewrite of `.ai/config.json` as the last commit. | WP-1A | AC-104, AC-105, AC-107, AC-108, AC-109, AC-110, AC-111, AC-112 |
+| 2 | **WP-1B Call sites and migration.** FR-106 and FR-107, `test-registry-callsites.ps1`, then (after approval) the v2 rewrite of `.ai/config.json` as the last commit. | WP-1A | AC-104, AC-105, AC-107, AC-108, AC-109, AC-110, AC-111, AC-112, AC-113 |
 | 3 | Final QA, independent review and human approval. | WP-1B | All |
 
 ## Edge Cases
@@ -328,7 +360,7 @@ Two work packages, each one commit. Run `scripts/test-all.ps1` offline after eac
 - **v1 without `num_ctx`.** `contextWindow` stays absent, no margin check runs, and nothing is added to `options`.
 - **`options` key order.** Effective options are compared as key and value pairs; the JSON key order in the request body may differ from v1, which Ollama ignores.
 - **`-Model` and `-Profile` both bound, one of them blank.** Still rejected: the check looks at whether each parameter was bound.
-- **`-Model` matching two or more profiles.** The agent's profile supplies the parameters, with no warning (OQ-104). `-Profile` also wins over `AI_HARNESS_MODEL` (rule 3 before rule 4).
+- **`-Model` matching two or more profiles.** The agent's profile supplies the parameters, with no warning (OD-109). `-Profile` also wins over `AI_HARNESS_MODEL` (rule 3 before rule 4).
 - **Case.** Agent and profile names are looked up as PowerShell looks up a property, which ignores case (A-103). Model names are compared without regard to case when `-Model` is matched to a profile, as the availability check does (Phase 0 FR-010).
 
 ## Dependencies
@@ -344,7 +376,8 @@ Two work packages, each one commit. Run `scripts/test-all.ps1` offline after eac
 | RK-101 | A v1 file resolves differently after the change. | AC-101 and AC-102 (golden tables on the frozen v1 file and its v2 translation); the wrapper keeps the old signature (FR-105). |
 | RK-102 | A test makes a real request. | NFR-102 guards on every child-process case; resolution tests are in-process and need no request. |
 | RK-103 | The v2 rewrite of `.ai/config.json` breaks live use. | It is the last commit of WP-1B, needs approval, and is reverted alone; v1 stays valid. |
-| RK-104 | The provisional `reservedOutputTokens` values are wrong. | They are only stored in Phase 1; calibrated in Phase 2 (OD-105). |
+| RK-104 | The provisional `reservedOutputTokens` values are wrong. | They are only stored in Phase 1; calibrated in Phase 2 (OD-105, OD-112). |
+| RK-105 | The reviewer's options (`temperature` 0.1, `seed` 42) change its behavior compared with v1. | Intentional and bounded by AC-113; stored in one profile (`review`), so it is reverted by editing that profile or the migration commit; to be measured later (OD-112). |
 
 **Rollback.** Each work package is one commit, reverted with `git revert`: WP-1B first (including the config rewrite), then WP-1A. Reverting only the `.ai/config.json` commit returns the file to v1, which every version of the loader accepts. Telemetry and logs are never changed.
 
@@ -356,20 +389,22 @@ Two work packages, each one commit. Run `scripts/test-all.ps1` offline after eac
 | OD-102 | `-Model` together with `-Profile` is rejected with a clear error (roadmap O-04). | FR-104, AC-105 |
 | OD-103 | The initial profiles are `fast` (`qwen3.5:9b`) and `deep` (`qwen3.6:35b`). | FR-101 |
 | OD-104 | Each profile has a `think` field (`true`, `false` or `default`); Phase 1 only stores it, Phase 2 uses it. | FR-101, FR-108 |
-| OD-105 | `reservedOutputTokens` is 4096 for `fast` and 6144 for `deep`, to calibrate in Phase 2 (roadmap O-16, provisional). | FR-101, RK-105 |
+| OD-105 | `reservedOutputTokens` is 4096 for `fast` and 6144 for `deep`, to calibrate in Phase 2 (roadmap O-16, provisional). Superseded for `deep` (and the new `review`) by OD-112: 8192. | FR-101, RK-104 |
+| OD-106 | `stripThinking` lives in `defaults.stripThinking` (was OQ-101, A-101). | FR-101 |
+| OD-107 | `reasoning`, `transport`, `agents.<A>.promptFile`, `defaults.charsPerToken` and the `tests` section move to Phase 2 (was OQ-102). | Out of scope |
+| OD-108 | Phase 1 adds no `-Profile` to `specify.ps1`; only the three scripts that resolve a model get it (was OQ-103). | FR-106 |
+| OD-109 | `-Model M` matching two or more profiles uses the agent's profile with no warning; `unregistered_model_override` is only in the record, never printed (was OQ-104). | FR-104, Edge Cases |
+| OD-110 | `.ai/config.json` is migrated to v2 as the last commit of WP-1B, with human approval (was OQ-105). | FR-101, RK-103 |
+| OD-111 | `timeoutSec` 900 and `contextWindow` 16384 stay as today in every profile (was OQ-106). | FR-101 |
+| OD-112 | The migrated `.ai/config.json` has three profiles: `fast` (`qwen3.5:9b`, `think` `"default"`, `reservedOutputTokens` 4096), `deep` (`qwen3.6:35b`, `think` `"default"`, 8192) and `review` (`qwen3.6:35b`, options `temperature` 0.1 and `seed` 42, `think` `"default"`, 8192). Agents: `spec` to `fast`, `spec-reviewer` to `review`, `spec-reviser` and `developer` to `deep`; `defaults.profile` is `fast`. The rationale is in FR-101. The fixture `config-v2-current.json` stays a strict translation of v1. | FR-101, NFR-103, AC-113, RK-105 |
 
 ## Open Questions
 
-- **OQ-101:** Where does `stripThinking` live in v2? This draft puts it in `defaults.stripThinking` (A-101), because v1 has it and it must keep working. Confirm or choose another place.
-- **OQ-102:** The roadmap's FR-101 also lists `reasoning`, `transport`, `agents.<A>.promptFile`, `defaults.charsPerToken`, `ollama` extras and a `tests` section. This draft omits them because nothing in Phase 1 uses them (test-all already uses `ModelAgent`). Confirm that they move to Phase 2.
-- **OQ-103:** Does Phase 1 add `-Profile` to `specify.ps1` (and pass it to its reviewer and reviser)? This draft says no: only the three scripts that resolve a model get it; `specify.ps1` is Phase 3.
-- **OQ-104:** What should `-Model M` do when `M` matches two or more profiles? This draft uses the agent's profile with no warning. Also: should `unregistered_model_override` be printed anywhere? This draft only records it in the record, to keep v1 output unchanged.
-- **OQ-105:** Is `.ai/config.json` migrated to v2 inside Phase 1 (WP-1B, with approval) or left as v1 until later? The roadmap says migration needs approval. This draft schedules it as the last commit of WP-1B.
-- **OQ-106:** Initial `timeoutSec` (900) and `contextWindow` (16384) for both profiles equal today's values, because the timeout fix (roadmap O-01) is deferred. Confirm that they stay as they are.
+None.
 
 ## Assumptions
 
-- **A-101:** `defaults.stripThinking` is an acceptable home for `stripThinking` (OQ-101).
+- **A-101:** `defaults.stripThinking` is the home for `stripThinking` (confirmed by OD-106).
 - **A-102:** A `think` value of `"default"` means no `think` member is sent, as the harness does today. Phase 2 defines how `true` and `false` are sent.
 - **A-103:** PowerShell property lookup ignores case, so agent and profile keys read from parsed JSON are found regardless of case, as the current `agentModels` lookup does. This spec does not change that.
 - **A-104:** The three historical model names are the only ones that could reappear as literals; the scan also covers every configured name.

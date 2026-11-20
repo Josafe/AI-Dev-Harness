@@ -1,0 +1,16 @@
+{
+    "ollamaUrl": "http://localhost:11434",
+    "defaultModel": "qwen3.5:9b",
+    "agentModels": {
+            "spec": "qwen3.5:9b",
+            "spec-reviewer": "qwen3.6:35b",
+            "spec-reviser": "qwen3.6:35b",
+            "developer": "qwen3.6:35b"
+            },
+    "options": {
+        "temperature": 0.2,
+        "num_ctx": 16384
+    },
+    "timeoutSec": 900,
+    "stripThinking": true
+}

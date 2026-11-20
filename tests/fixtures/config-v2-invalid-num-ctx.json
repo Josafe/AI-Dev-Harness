@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "alpha" },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "contextWindow": 8192, "options": { "num_ctx": 4096 } }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

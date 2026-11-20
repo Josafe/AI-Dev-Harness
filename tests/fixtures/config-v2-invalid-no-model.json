@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "alpha" },
+  "profiles": {
+    "alpha": { "contextWindow": 8192 }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

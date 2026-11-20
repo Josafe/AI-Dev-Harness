@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "missing" },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "contextWindow": 8192, "timeoutSec": 300, "reservedOutputTokens": 2048 }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

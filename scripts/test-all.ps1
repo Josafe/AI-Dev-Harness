@@ -106,6 +106,10 @@ $suiteOverrides = @{
         Isolation = "sandbox"
         Reason    = "Writes generated test-mock-* artifacts into <root>\specs (git-ignored and no longer tracked, but the repository tripwire would still flag them); runs from a verified byte-identical copy in a temp sandbox."
     }
+    "test-mode-propagation.ps1" = @{
+        Isolation = "sandbox"
+        Reason    = "Runs specify.ps1 with recording mocks, which writes test-mock-mode-* artifacts into <root>\specs; runs from a verified byte-identical copy in a temp sandbox."
+    }
     "test-spec-integration.ps1" = @{
         Requires   = "ollama"
         Model      = "qwen2.5-coder:32b"

@@ -96,6 +96,35 @@ if (-not (Test-Path $specDirectory)) {
     New-Item -ItemType Directory -Path $specDirectory -Force | Out-Null
 }
 
+# Pass -Mode only to a validator that declares it (FR-008). Get-Command only
+# parses the script. If the check fails, the validator is called as before
+# (FR-019) and the run continues; any later failure happens as it does today.
+$validatorArgs = @{}
+$validatorModeCheck = "declared"
+$validatorModeReason = ""
+try {
+    $validatorParameters = (Get-Command -Name $validator -CommandType ExternalScript -ErrorAction Stop).Parameters
+    if ($null -eq $validatorParameters) {
+        $validatorModeCheck = "not confirmed"
+        $validatorModeReason = "no parameter metadata"
+    }
+    elseif ($validatorParameters.ContainsKey("Mode")) {
+        $validatorArgs.Mode = $Mode
+    }
+    else {
+        $validatorModeCheck = "not declared"
+    }
+}
+catch {
+    $validatorModeCheck = "not confirmed"
+    $validatorModeReason = $_.Exception.GetType().Name
+}
+
+$validationSummary = "PASS"
+if ($Mode -eq "documentation" -and $validatorModeCheck -ne "declared") {
+    $validationSummary = "PASS (validator called without -Mode; documentation-mode rules NOT applied)"
+}
+
 Write-Host ""
 Write-Host "=== Specification Workflow ===" -ForegroundColor Cyan
 Write-Host "Name  : $Name"
@@ -110,6 +139,15 @@ ORIGINAL USER REQUEST:
 $Task
 "@
 Write-Host ""
+
+if ($Mode -eq "documentation" -and $validatorModeCheck -eq "not declared") {
+    Write-Host "WARNING: Validator '$validator' does not declare a -Mode parameter. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead." -ForegroundColor Yellow
+    Write-Host ""
+}
+elseif ($Mode -eq "documentation" -and $validatorModeCheck -eq "not confirmed") {
+    Write-Host "WARNING: Could not read the parameters of validator '$validator' ($validatorModeReason), so support for -Mode could not be confirmed. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead." -ForegroundColor Yellow
+    Write-Host ""
+}
 
 # ------------------------------------------------------------
 # Step 1 - Generate specification
@@ -152,7 +190,7 @@ Write-Host ""
 Write-Host "Step 2 - Validating specification structure..." -ForegroundColor Yellow
 Write-Host ""
 
-& $validator -SpecFile $specFile
+& $validator -SpecFile $specFile @validatorArgs
 
 if ($LASTEXITCODE -eq 3) {
     Write-Host ""
@@ -243,7 +281,7 @@ for ($revision = 0; $revision -le $maxRevisions; $revision++) {
         Write-Host "=== Specification Workflow Complete ===" -ForegroundColor Green
         Write-Host ""
         Write-Host "Specification: $currentSpecFile"
-        Write-Host "Validation   : PASS"
+        Write-Host "Validation   : $validationSummary"
         Write-Host "Review       : PASS"
         Write-Host "Review File  : $currentReviewFile"
         Write-Host "Revisions    : $revision"
@@ -328,7 +366,8 @@ for ($revision = 0; $revision -le $maxRevisions; $revision++) {
     Write-Host ""
 
     & $validator `
-        -SpecFile $nextSpecFile
+        -SpecFile $nextSpecFile `
+        @validatorArgs
 
     if ($LASTEXITCODE -ne 0) {
         Write-Host ""

@@ -5,11 +5,7 @@
     [ValidateNotNullOrEmpty()]
     [string]$Task,
 
-    [string[]]$Models = @(
-        "qwen2.5-coder:7b",
-        "qwen2.5-coder:32b",
-        "deepseek-r1:32b"
-    ),
+    [string[]]$Models,
 
     [ValidateRange(1, 20)]
     [int]$Repetitions = 3,
@@ -51,6 +47,16 @@ $powerShellExe = Join-Path $PSHOME "powershell.exe"
 
 if (-not (Test-Path $runner -PathType Leaf)) {
     throw "Runner not found: $runner"
+}
+
+# Without -Models, the default is the distinct profile models of the registry,
+# in profile order (FR-107). An explicit -Models is used as given.
+if (-not $PSBoundParameters.ContainsKey('Models')) {
+    . (Join-Path $PSScriptRoot "lib\config.ps1")
+    $Models = @(Get-HarnessRegistryModels -Registry (Get-HarnessRegistry -ConfigPath (Join-Path $root ".ai\config.json")))
+    if ($Models.Count -eq 0) {
+        throw "No models configured for the benchmark. Use -Models or define models in .ai\config.json."
+    }
 }
 
 if ([string]::IsNullOrWhiteSpace($OutputDirectory)) {

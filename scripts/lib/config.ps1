@@ -263,6 +263,9 @@ function Assert-HarnessRegistryV2 {
 function ConvertTo-HarnessRegistry {
     param($Config)
 
+    # An already normalized registry is returned as it is.
+    if ($null -ne $Config -and $Config.PSObject.TypeNames -contains "Harness.Registry") { return $Config }
+
     $warnings = New-Object 'System.Collections.Generic.List[string]'
 
     if ($null -ne (Get-HarnessMember $Config "schemaVersion")) {
@@ -305,7 +308,7 @@ function ConvertTo-HarnessRegistry {
     $defaultOptions = Get-ConfigValue $defaults "options" $null
     if (-not (Test-HarnessObject $defaultOptions)) { $defaultOptions = [pscustomobject]@{} }
 
-    return [pscustomobject]@{
+    $registry = [pscustomobject]@{
         schemaVersion = 2
         ollama        = [pscustomobject]@{
             url              = Get-ConfigValue $ollama "url" "http://localhost:11434"
@@ -322,6 +325,8 @@ function ConvertTo-HarnessRegistry {
         agents        = [pscustomobject]$agents
         warnings      = $warnings.ToArray()
     }
+    $registry.PSObject.TypeNames.Insert(0, "Harness.Registry")
+    return $registry
 }
 
 # Reads the configuration file (v1 or v2) and returns the normalized v2 registry.
@@ -493,16 +498,25 @@ function Invoke-HarnessGenerate {
         [Parameter(Mandatory = $true)][string]$Prompt,
         [Parameter(Mandatory = $true)]$Config,
         [string]$TelemetryAgent,
-        [string]$TelemetryRoot
+        [string]$TelemetryRoot,
+        $Execution
     )
 
-    $ollamaUrl     = (Get-ConfigValue $Config "ollamaUrl" "http://localhost:11434").TrimEnd('/')
-    $timeoutSec    = [int](Get-ConfigValue $Config "timeoutSec" 600)
-    $stripThinking = [bool](Get-ConfigValue $Config "stripThinking" $true)
-    $options       = Get-ConfigValue $Config "options" $null
+    # -Config is a configuration object (v1 or v2) or a normalized registry.
+    # -Execution is the record of Resolve-HarnessExecution; without it the
+    # registry defaults apply, as before the registry. No think member is sent.
+    $registry      = ConvertTo-HarnessRegistry -Config $Config
+    $ollamaUrl     = ([string]$registry.ollama.url).TrimEnd('/')
+    $timeoutSec    = [int]$registry.defaults.timeoutSec
+    $stripThinking = [bool]$registry.defaults.stripThinking
+    $options       = Get-HarnessEffectiveOptions -Registry $registry -Profile $null
+    if ($null -ne $Execution) {
+        $timeoutSec = [int]$Execution.timeoutSec
+        $options    = $Execution.options
+    }
 
     $payload = @{ model = $Model; system = $System; prompt = $Prompt; stream = $false }
-    if ($options) { $payload.options = $options }
+    if (@($options.PSObject.Properties).Count -gt 0) { $payload.options = $options }
 
     $json  = $payload | ConvertTo-Json -Depth 10
     $bytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json)
@@ -554,10 +568,12 @@ function Test-HarnessModelAvailable {
         [Parameter(Mandatory = $true)]$Config
     )
 
-    $ollamaUrl = (Get-ConfigValue $Config "ollamaUrl" "http://localhost:11434").TrimEnd('/')
+    $registry         = ConvertTo-HarnessRegistry -Config $Config
+    $ollamaUrl        = ([string]$registry.ollama.url).TrimEnd('/')
+    $healthTimeoutSec = [int]$registry.ollama.healthTimeoutSec
 
     try {
-        $ollamaTags = Invoke-RestMethod -Uri "$ollamaUrl/api/tags" -Method Get -TimeoutSec 15
+        $ollamaTags = Invoke-RestMethod -Uri "$ollamaUrl/api/tags" -Method Get -TimeoutSec $healthTimeoutSec
     }
     catch {
         $problem = "Ollama is not reachable at $ollamaUrl. Make sure Ollama is running."

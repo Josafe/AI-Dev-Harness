@@ -12,11 +12,12 @@ $reviewer = Join-Path $PSScriptRoot "review-spec.ps1"
 # -Model is passed on only when it was given. The model in use is printed.
 $modelWasProvided = $PSBoundParameters.ContainsKey('Model')
 . (Join-Path $PSScriptRoot "lib\config.ps1")
-$resolvedModel = Resolve-HarnessModel `
-    -Agent "spec-reviewer" `
-    -ModelWasProvided $modelWasProvided `
-    -ExplicitModel $Model `
-    -Config (Get-HarnessConfig -ConfigPath (Join-Path $root ".ai\config.json"))
+$executionArguments = @{
+    Agent    = "spec-reviewer"
+    Registry = (Get-HarnessRegistry -ConfigPath (Join-Path $root ".ai\config.json"))
+}
+if ($modelWasProvided) { $executionArguments.Model = $Model }
+$resolvedModel = (Resolve-HarnessExecution @executionArguments).model
 $reviewerModelArguments = @()
 if ($modelWasProvided) {
     $reviewerModelArguments = @("-Model", $Model)

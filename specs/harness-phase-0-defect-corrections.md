@@ -1,8 +1,8 @@
 # Specification
 
 **Title:** Harness modernization, Phase 0: corrections to verified defects
-**Status:** Revision 3 (2026-11-20). All design decisions are resolved and the spec is ready for implementation. See "Resolved Decisions" and "Revision History".
-**Applies to:** AI-Dev-Harness at commit `2e85dbe` (working tree: `.gitignore` modified, `specs/portfolio-*` untracked)
+**Status:** Revision 4 (2026-11-20). All design decisions are resolved. Work packages A, C, D and E are implemented; the final QA is recorded in `docs/audits/2026-11-20-phase0-final-qa.md`. See "Resolved Decisions" and "Revision History".
+**Applies to:** AI-Dev-Harness. Baseline commit: `2e85dbe` (the line references below are to this commit; at that time the working tree had `.gitignore` modified and `specs/portfolio-*` untracked). Revision 4 was checked against the implemented repository at commit `fdbb2ee`, after WP-A, WP-C, WP-D and WP-E.
 **Requirement ID scheme:** Phase 0 uses `FR-0nn`, `NFR-0nn`, `AC-0nn`. Phase 1 starts at `FR-101`. Retired IDs are never reused: FR-009 and WP-B were removed in Revision 1.
 
 ## Goal
@@ -41,6 +41,7 @@ When Phase 0 is done:
 - Revision 1 applies the findings of a read-only review of this spec and the decisions confirmed on 2026-11-19 (OD-01 to OD-05).
 - Revision 2 applies the findings of a final read-only audit and the decision confirmed as OD-06.
 - Revision 3 applies the decision confirmed on 2026-11-20 as OD-07 (the FR-019 warning uses `Write-Host` with a literal prefix) and the related test-wording corrections.
+- Revision 4 applies the findings of the implementation reports (stale model references, the line-ending fact for AC-017, and the verified assumptions A-02 and A-07). It changes no requirement.
 
 ### Verified defects
 
@@ -53,7 +54,7 @@ All six were verified by reading the code on 2026-11-19.
 | D-03 | The reviewer and reviser do not check that Ollama is reachable or that the model is installed. | [run-agent.ps1:83-97](scripts/run-agent.ps1#L83-L97) checks `/api/tags`. [review-spec.ps1](scripts/review-spec.ps1) and [revise-spec.ps1](scripts/revise-spec.ps1) do not. |
 | D-04 | Test and benchmark scripts contain hardcoded model names. | [test-spec.ps1:3](scripts/test-spec.ps1#L3) has a default for `$Model`, but the parameter is never used. Other occurrences: [test-spec-integration.ps1:2](scripts/test-spec-integration.ps1#L2), [test-all.ps1:111](scripts/test-all.ps1#L111), [benchmark-models.ps1:8-12](scripts/benchmark-models.ps1#L8-L12). |
 | D-05 | No test checks that `-Mode` reaches every stage. | [test-spec.ps1](scripts/test-spec.ps1) contains no `-Mode` cases, and no mock records the arguments it receives. |
-| D-06 | The live reviewer test uses `qwen2.5-coder:32b`, but the configured reviewer is `deepseek-r1:32b`. | [test-spec-integration.ps1:2](scripts/test-spec-integration.ps1#L2) and [test-all.ps1:111](scripts/test-all.ps1#L111), against [config.json:6](.ai/config.json#L6). |
+| D-06 | The live reviewer test uses `qwen2.5-coder:32b`, but the configured reviewer (`agentModels.spec-reviewer`) is a different model. | [test-spec-integration.ps1:2](scripts/test-spec-integration.ps1#L2) and [test-all.ps1:111](scripts/test-all.ps1#L111), against [config.json:6](.ai/config.json#L6). |
 
 ### Corrections to the audit (FACT, verified 2026-11-19)
 
@@ -105,13 +106,12 @@ All six were verified by reading the code on 2026-11-19.
   - SKIPPED: `test-spec-integration`
   - The repository tripwire was clean.
 
-### Ollama and model configuration at review time (FACT, 2026-11-19)
+### Ollama and model configuration at review time (FACT, 2026-11-19; the configuration has changed since)
 
 - **Server:** Ollama is not running. Nothing answers on `localhost:11434`. The app log shows it shut down at 15:23:56.
 - **Installed models**, from the on-disk manifests: `deepseek-r1:32b`, `qwen2.5-coder:32b`, `qwen2.5-coder:7b`.
 - **`.ai/config.json`:**
-  - `defaultModel`: `qwen2.5-coder:32b`
-  - `agentModels.spec-reviewer`: `deepseek-r1:32b`
+  - At review time, `defaultModel` and `agentModels.spec-reviewer` named two different models, which is what D-06 describes. The values were later changed to the current models (currently `defaultModel` is `qwen3.5:9b` and `agentModels.spec-reviewer` is `qwen3.6:35b`). No requirement or criterion depends on a literal value.
   - `timeoutSec`: 900
   - `num_ctx`: 16384
 - **Environment:** `AI_HARNESS_MODEL` is not set.
@@ -350,7 +350,7 @@ Apart from FR-010 and FR-011, these stay exactly as they are for `review-spec.ps
 **Without `-IncludeLive`:**
 
 - The live suite is reported SKIPPED (NOT VERIFIED), as today.
-- If resolution succeeded, the detail names the model and the agent. For example: "requires Ollama and model 'deepseek-r1:32b' (agent 'spec-reviewer'); use -IncludeLive."
+- If resolution succeeded, the detail names the model and the agent. For example: "requires Ollama and model '<model>' (agent 'spec-reviewer'); use -IncludeLive.", where `<model>` is the resolved model.
 - If it failed, the detail reads "model could not be resolved (agent 'spec-reviewer'): `<reason>`".
 - A resolution failure is **never** a FAIL and never adds a `test-all configuration` result.
 - `STATUS` and the exit code depend only on the offline suites and on test-all's own table validation. The existing rule is unchanged: exit 0 only if there is no FAIL and at least one suite passed.
@@ -796,8 +796,10 @@ Verifies: FR-012.
 
 1. **Get the "before" versions.** Extract the pre-change `review-spec.ps1`, `revise-spec.ps1` and `lib/config.ps1` from commit `2e85dbe` into a temporary harness root under `TEMP`, using `git show`.
 2. **Capture.** Run the FR-018 harness, with the same stub inputs, against the "before" versions and against the changed versions, and capture the `system` and `prompt` fields that each sends.
-3. **Compare.** The SHA-256 hashes must be identical for both the reviewer and the reviser.
+3. **Compare, with the same line endings.** The SHA-256 hashes must be identical for both the reviewer and the reviser, when the old and the new scripts have the same line endings (both normalized to LF, or both as checked out).
 4. **Record.** Put the hashes in the implementation report.
+
+**FACT (verified 2026-11-20, `docs/audits/2026-11-20-wp-d-implementation.md`, sections 5 and 7):** this repository uses `core.autocrlf=true`, so `git show` writes LF while the working tree has CRLF (and `review-spec.ps1` has mixed endings). PowerShell carries a script's line endings into its here-string prompts. Comparing a `git show` copy with the working tree therefore gives different `system` hashes even with no code change (reviewer `system`: `60CCC066…` against `FCA4F91A…`); the one-line `prompt` field is not affected. With the same line endings, before and after were identical for all four fields, in both forms.
 
 ### AC-018 — No model names in the changed test scripts
 
@@ -805,11 +807,10 @@ Verifies: FR-012.
 
 Verifies: FR-013, FR-014, FR-015.
 
-None of these model names appears in `scripts/test-spec.ps1`, `scripts/test-spec-integration.ps1` or `scripts/test-all.ps1`:
+None of these appears in `scripts/test-spec.ps1`, `scripts/test-spec-integration.ps1` or `scripts/test-all.ps1`:
 
-- `qwen2.5-coder:32b`
-- `qwen2.5-coder:7b`
-- `deepseek-r1:32b`
+- any model name from `.ai/config.json` (`defaultModel` and every value of `agentModels`)
+- any of the historical names: `qwen2.5-coder:32b`, `qwen2.5-coder:7b`, `deepseek-r1:32b`
 
 Check with `Select-String -SimpleMatch`. A match is allowed only in a comment that explains the deferral.
 
@@ -822,7 +823,7 @@ Verifies: FR-014.
 Run `scripts/test-all.ps1` without `-IncludeLive`, with the current `.ai/config.json` and `AI_HARNESS_MODEL` not set. Then:
 
 - `test-spec-integration.ps1` is reported `SKIPPED`
-- its detail line names `deepseek-r1:32b`, the configured `spec-reviewer` model
+- its detail line names the model configured for `spec-reviewer` (currently `qwen3.6:35b`)
 - no `test-all configuration` FAIL is reported
 
 ### AC-020 — The live reviewer test resolves its model like production (inspection)
@@ -836,7 +837,7 @@ Checked by reading the code, with no execution:
 - `test-spec-integration.ps1` passes `-Model` to `review-spec.ps1` only when its own `-Model` was given (`$PSBoundParameters`)
 - it prints the model resolved through `Resolve-HarnessModel -Agent spec-reviewer`
 
-**Deferred, not a Phase 0 exit criterion:** a live run with `-IncludeLive` once Ollama is running with `deepseek-r1:32b` installed. It is reported as NOT VERIFIED until that run happens.
+**Deferred, not a Phase 0 exit criterion:** a live run with `-IncludeLive` once Ollama is running with the model configured for `spec-reviewer` installed. It is reported as NOT VERIFIED until that run happens.
 
 ### AC-021 — Full offline regression run
 
@@ -1287,7 +1288,7 @@ AC-029 is checked in step 5, because it inspects code from both WP-D (the availa
 | RK-02 | Documentation mode is used to skip AC for real functional work. | FR-005 (FR requires AC) and FR-007 (no unstructured FR or AC). The mode is chosen explicitly by the caller and is checked semantically by the reviewer. |
 | RK-03 | The parameter check gives the wrong answer, so a validator gets `-Mode` when it shouldn't, or doesn't get it when it should. | The check uses PowerShell's own parameter metadata and only parses the script. If it fails, the old invocation is used (FR-019). AC-023 covers an advanced script without `-Mode`; AC-024 covers a simple script, a script that fails to parse, and both invocation points. |
 | RK-04 | A validator without `-Mode` is mistaken for a documentation-aware one. | The mandatory FR-019 warning and summary note. FR-019 forbids any output that implies documentation-mode rules were applied. |
-| RK-05 | The live reviewer test now uses `deepseek-r1:32b` (about 2.2 tokens/s here). It is slower and may hit the 900 s `timeoutSec`, which is not fixed in Phase 0. | Recorded. The live suite is not a Phase 0 exit criterion. Revisit together with the timeout decision. |
+| RK-05 | The live reviewer test now uses the model configured for `spec-reviewer` (currently `qwen3.6:35b`), a large local model. It may be slow and hit the 900 s `timeoutSec`, which is not fixed in Phase 0. | Recorded. The live suite is not a Phase 0 exit criterion. Revisit together with the timeout decision. |
 | RK-06 | The telemetry suite makes a real HTTP request. | The four FR-018 guards and the AC-030 negative cases. |
 | RK-07 | A broken `.ai/config.json`, or a live-suite model that doesn't resolve, goes unnoticed in an offline run, because the run still passes with skips. | By design (FR-014, OD-06): the offline suites don't use the config. The reason is printed in the live suite's SKIPPED detail, any `-IncludeLive` run fails with that reason, and the live suite is never reported as verified. AC-028 covers both modes. |
 | RK-08 | The extra `/api/tags` call in the reviewer and reviser adds up to 15 s when Ollama hangs. | The same trade-off run-agent already makes. A missing model now fails earlier, with a clearer message and the same exit code. |
@@ -1326,12 +1327,12 @@ None
 ## Assumptions
 
 - **A-01:** `-RunnerScript`, `-ValidatorScript`, `-ReviewerScript` and `-ReviserScript` on `specify.ps1` are test seams. Revision 1 no longer depends on this assumption for validators, because FR-019 preserves validators that don't declare `-Mode` whoever uses them.
-- **A-02 (UNVERIFIED for script files):** Inside the child test process, a function named `Invoke-RestMethod` takes precedence over the cmdlet for scripts run with `&`. This was verified with script blocks on 2026-11-19, and is confirmed for script files in WP-D step 3a before anything depends on it. FR-018 guards 2 and 3 make a wrong assumption fail the test rather than send a real request.
-- **A-03:** The configured `agentModels.spec-reviewer` (`deepseek-r1:32b`) is the model the live reviewer test is meant to exercise. This follows from defect 6 in the Phase 0 request.
+- **A-02 (VERIFIED, 2026-11-20):** Inside the child test process, a function named `Invoke-RestMethod` takes precedence over the cmdlet for scripts run with `&`. This was verified with script blocks on 2026-11-19, and confirmed for script files in WP-D step 3a, before any code change (`docs/audits/2026-11-20-wp-d-implementation.md`, section 4). FR-018 guards 2 and 3 make a wrong assumption fail the test rather than send a real request.
+- **A-03:** The model configured for `agentModels.spec-reviewer` (currently `qwen3.6:35b`) is the model the live reviewer test is meant to exercise. This follows from defect 6 in the Phase 0 request.
 - **A-04:** The previous audit recovered from the earlier session transcript is complete for Phase 0. No copy exists in the repository, in the project memory, or in the sibling backup folder `AI-Dev-Harness-backup-20261117-104625`, which was searched on 2026-11-19 and predates the audit.
 - **A-05 (decision recorded as an assumption):** script paths that contain `[` or `]` are not supported, and Phase 0 documents this rather than switching to `-LiteralPath`-style resolution. This is the smaller change: the existing `Test-Path` checks already reject such paths before the FR-008 check is reached (verified 2026-11-20: `Test-Path` returned `False` for a validator under a `br[1]` folder, while `Test-Path -LiteralPath`, `Get-Command` and `&` all worked). Changing those checks would alter existing behavior outside Phase 0's defects (NFR-004). The assumption is that nobody relies on such paths. If they do, supporting them is a separate change.
 - **A-06 (to confirm):** when `.Parameters` is `$null`, `<reason>` is the fixed text `no parameter metadata`. OD-07 defines `<reason>` as an exception type name, but in this case no exception is raised (see Context). The example in the Revision 3 request, `ParseException`, does not occur in this case. No test checks `<reason>` (NFR-006), so the wording can change without affecting any criterion.
-- **A-07 (UNVERIFIED):** a validator that fails to parse makes `specify.ps1` exit 2, today and after Phase 0. AC-024 uses 2 as a fixed expected value. Its one-time check against the `2e85dbe` version of `specify.ps1` confirms this during implementation; until then it is an assumption.
+- **A-07 (VERIFIED, 2026-11-20):** a validator that fails to parse makes `specify.ps1` exit 2, today and after Phase 0. AC-024 uses 2 as a fixed expected value. The one-time check confirmed that the `2e85dbe` version of `specify.ps1` exits 2 for such a validator (`docs/audits/2026-11-20-wp-c-implementation.md`, section 5).
 
 ## Revision History
 
@@ -1341,6 +1342,7 @@ None
 | Revision 1 | 2026-11-19 | Applied the read-only review findings and the confirmed decisions OD-01 to OD-05. See the list below. |
 | Revision 2 | 2026-11-19 | Applied the final audit findings and decision OD-06. See the list below. |
 | Revision 3 | 2026-11-20 | Applied decision OD-07 (the FR-019 warning uses `Write-Host`) and the test-wording rule NFR-006. See the list below. |
+| Revision 4 | 2026-11-20 | Applied the implementation-report findings: stale model references, AC-017 line endings, A-02 and A-07 verified. No requirement changed. See the list below. |
 
 **Revision 1 changes:**
 
@@ -1401,3 +1403,11 @@ None
 - **Execution order and verification strategy:** AC-031 is checked in step 5.
 - **Resolved Decisions:** added OD-07.
 - **Execution order:** AC-029 moved to step 5, after both WP-D and WP-E.
+
+**Revision 4 changes:**
+
+- **Model references:** AC-018, AC-019, AC-020 (deferred note), the FR-014 example, D-06, the Context table, A-03 and RK-05 no longer name `deepseek-r1:32b` as the configured `spec-reviewer` model. AC-018 now lists "any model name from `.ai/config.json`" and the historical names `qwen2.5-coder:32b`, `qwen2.5-coder:7b` and `deepseek-r1:32b`.
+- **AC-017:** the one-time prompt comparison must use the same line endings for the old and the new scripts. New FACT with the evidence from the WP-D report.
+- **Assumptions:** A-02 and A-07 are marked VERIFIED, citing the WP-D and WP-C reports. A-06 stays "to confirm".
+- **Header:** the "Applies to" and Status lines describe the baseline commit and the implemented state.
+- **Traceability Matrix:** unchanged. No ID was added, removed or re-linked, and every `Verifies:` line is as before.

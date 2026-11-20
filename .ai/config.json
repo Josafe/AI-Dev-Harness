@@ -1,16 +1,48 @@
 {
-    "ollamaUrl": "http://localhost:11434",
-    "defaultModel": "qwen3.5:9b",
-    "agentModels": {
-            "spec": "qwen3.5:9b",
-            "spec-reviewer": "qwen3.6:35b",
-            "spec-reviser": "qwen3.6:35b",
-            "developer": "qwen3.6:35b"
-            },
+  "schemaVersion": 2,
+  "ollama": {
+    "url": "http://localhost:11434",
+    "healthTimeoutSec": 15
+  },
+  "defaults": {
+    "profile": "fast",
     "options": {
-        "temperature": 0.2,
-        "num_ctx": 16384
+      "temperature": 0.2
     },
-    "timeoutSec": 900,
+    "safetyMarginRatio": 0.10,
     "stripThinking": true
+  },
+  "profiles": {
+    "fast": {
+      "model": "qwen3.5:9b",
+      "contextWindow": 16384,
+      "timeoutSec": 900,
+      "reservedOutputTokens": 4096,
+      "think": "default"
+    },
+    "deep": {
+      "model": "qwen3.6:35b",
+      "contextWindow": 16384,
+      "timeoutSec": 900,
+      "reservedOutputTokens": 8192,
+      "think": "default"
+    },
+    "review": {
+      "model": "qwen3.6:35b",
+      "contextWindow": 16384,
+      "timeoutSec": 900,
+      "reservedOutputTokens": 8192,
+      "think": "default",
+      "options": {
+        "temperature": 0.1,
+        "seed": 42
+      }
+    }
+  },
+  "agents": {
+    "spec": { "profile": "fast" },
+    "spec-reviewer": { "profile": "review" },
+    "spec-reviser": { "profile": "deep" },
+    "developer": { "profile": "deep" }
+  }
 }

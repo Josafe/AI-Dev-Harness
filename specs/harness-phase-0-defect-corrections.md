@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 0: corrections to verified defects
-**Status:** Revision 2 (2026-11-19). All design decisions are resolved and the spec is ready for implementation. See "Resolved Decisions" and "Revision History".
+**Status:** Revision 3 (2026-11-20). All design decisions are resolved and the spec is ready for implementation. See "Resolved Decisions" and "Revision History".
 **Applies to:** AI-Dev-Harness at commit `2e85dbe` (working tree: `.gitignore` modified, `specs/portfolio-*` untracked)
 **Requirement ID scheme:** Phase 0 uses `FR-0nn`, `NFR-0nn`, `AC-0nn`. Phase 1 starts at `FR-101`. Retired IDs are never reused: FR-009 and WP-B were removed in Revision 1.
 
@@ -40,6 +40,7 @@ When Phase 0 is done:
   - Test-model centralization that needs the registry is deferred to Phase 1.
 - Revision 1 applies the findings of a read-only review of this spec and the decisions confirmed on 2026-11-19 (OD-01 to OD-05).
 - Revision 2 applies the findings of a final read-only audit and the decision confirmed as OD-06.
+- Revision 3 applies the decision confirmed on 2026-11-20 as OD-07 (the FR-019 warning uses `Write-Host` with a literal prefix) and the related test-wording corrections.
 
 ### Verified defects
 
@@ -75,7 +76,7 @@ All six were verified by reading the code on 2026-11-19.
 - **Simple scripts swallow it.** A simple script (no `[Parameter]` or `[CmdletBinding]`) silently puts an unknown `-Mode documentation` into `$args`.
 - **The parameter can be detected without running the script.** `Get-Command <script path>` parses the script and reports its declared parameters: `validator-success.ps1` reports `SpecFile`; `reviewer-pass.ps1` reports `Task, SpecFile, Mode, Model, OutputFile`.
 - **Inspection can fail in two places.**
-  - For a script that fails to parse, `Get-Command` succeeds, but reading `.Parameters` throws.
+  - For a script that fails to parse, `Get-Command` succeeds, and `.Parameters` returns `$null` without raising an error. A valid script always returns a dictionary, which is empty when it has no `param` block. (Re-verified 2026-11-20 on four scripts that fail to parse. Revisions 1 and 2 said reading `.Parameters` throws; that came from a probe that called `.ContainsKey()` on the `$null` result.)
   - For a `.cmd` file, a missing file, or a relative path without `.\`, `Get-Command -CommandType ExternalScript` itself throws. For the relative path, `&` fails the same way.
 - **Binding errors give exit 1.** A parameter-binding error under `powershell.exe -File` exits 1.
 - **A function shadows a cmdlet.** A function named `Invoke-RestMethod` defined in a session takes precedence over the cmdlet, including when the call comes from a nested scope. This was verified with script blocks. Calls from a script file run with `&` are confirmed in WP-D, step 4a.
@@ -239,6 +240,7 @@ Any other content, including `None.` and free text without IDs, makes the valida
 - Resolve the validator path the same way `&` resolves it.
 - Read `.Parameters` from `Get-Command` on that path with `-CommandType ExternalScript`.
 - This only parses the script and never runs it.
+- The check has failed if `Get-Command` throws, if reading `.Parameters` throws, or if `.Parameters` is `$null` (a script that fails to parse; see Context).
 
 **Using the result:**
 
@@ -402,7 +404,7 @@ A new offline suite `scripts/test-mode-propagation.ps1` runs `specify.ps1` with 
 
 **Test settings:**
 
-- **Every scenario injects all four scripts.** Each `specify.ps1` run in this suite passes `-RunnerScript`, `-ValidatorScript`, `-ReviewerScript` and `-ReviserScript` explicitly. The only exception is the real `validate-spec.ps1`, which AC-011 names explicitly. No scenario relies on a default, so the real `run-agent.ps1`, `review-spec.ps1` and `revise-spec.ps1` are never invoked and no model request is possible.
+- **Every scenario injects all four scripts.** Each `specify.ps1` run in this suite passes `-RunnerScript`, `-ValidatorScript`, `-ReviewerScript` and `-ReviserScript` explicitly. In AC-011, `-ValidatorScript` is set explicitly to the path of the real `validate-spec.ps1`. Every other script, in every scenario including AC-011, is a mock. No scenario relies on a default, so the real `run-agent.ps1`, `review-spec.ps1` and `revise-spec.ps1` are never invoked and no model request is possible.
 - **Second line of defense.** The `test-all` sandbox contains only `scripts/` and `tests/`, not `.ai/`. If a real agent script were ever invoked by mistake, it would stop at "Agent not found" (or the reviewer and reviser equivalent) before reading the config or contacting Ollama.
 - The validator that fails to parse is generated under `TEMP` by the suite. It is never committed, because `test-syntax.ps1` parses every `.ps1` under `tests/`.
 - The suite runs in `test-all.ps1` with `Isolation = "sandbox"`, because `specify.ps1` writes into `<root>/specs`.
@@ -456,24 +458,27 @@ Guards 1 and 3 together ensure that a missing or invalid temporary config cannot
 This covers every validator for which FR-008 does not confirm a `Mode` parameter. There are two cases, and they are reported differently:
 
 - **Not declared.** Inspection succeeded, and the validator does not declare `Mode`.
-- **Not confirmed.** Inspection failed: `Get-Command` threw, or reading `.Parameters` threw. Examples are a script that fails to parse, a `.cmd` file, or a path `Get-Command` cannot resolve. Support for `-Mode` is then unknown, and must not be described as absent.
+- **Not confirmed.** Inspection failed: `Get-Command` threw, reading `.Parameters` threw, or `.Parameters` was `$null`. Examples are a script that fails to parse (`$null`), a `.cmd` file, or a path `Get-Command` cannot resolve. Support for `-Mode` is then unknown, and must not be described as absent.
 
 Both cases are handled as follows:
 
 - **Invocation.** At both invocation points, the validator is called exactly as today, with `-SpecFile <file>` and nothing else. It never receives `-Mode`, either as a parameter or in `$args`.
 - **Errors are not raised early.** If the parameter check itself fails, `specify.ps1` does not stop early. The run continues, and the later invocation fails or succeeds exactly as it does today.
 - **`requirements` and `baseline` modes.** No warning, and the console output is unchanged. In baseline mode, the harness's own validator applies the same rules as in requirements mode (FR-002), so leaving the mode out does not change the intended rules.
-- **`documentation` mode.** `specify.ps1` emits exactly one warning, before Step 1, with `Write-Warning`.
-  - `Write-Warning` adds the `WARNING: ` prefix itself, so the message text below does **not** include it, and the implementation must not add it either. The console line therefore starts with exactly one `WARNING: `.
+- **`documentation` mode.** `specify.ps1` prints exactly one warning line, before Step 1, with `Write-Host` (OD-07).
+  - The text below, including its literal, non-localized `WARNING: ` prefix, is printed as one line with no line break. The prefix appears exactly once.
+  - `Write-Warning` is not used. Its prefix is localized (es-ES prints `ADVERTENCIA:`), and the console wraps its long lines (NFR-006). Because the line is not written to the warning stream, `-WarningAction` and `$WarningPreference` do not suppress it.
   - **Not declared:**
 
-    `Validator '<path>' does not declare a -Mode parameter. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead.`
+    `WARNING: Validator '<path>' does not declare a -Mode parameter. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead.`
 
   - **Not confirmed:**
 
-    `Could not read the parameters of validator '<path>' (<reason>), so support for -Mode could not be confirmed. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead.`
+    `WARNING: Could not read the parameters of validator '<path>' (<reason>), so support for -Mode could not be confirmed. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead.`
 
+  - `<reason>` is the type name of the caught exception (`$_.Exception.GetType().Name`, for example `CommandNotFoundException`), never the exception message, because messages are localized and may span several lines. When `.Parameters` is `$null`, no exception is raised and `<reason>` is the fixed text `no parameter metadata` (A-06).
   - The "not confirmed" text must not contain "does not declare".
+  - **When the warning appears.** A `specify.ps1` run without `-Mode` (which defaults to `requirements`), or with `-Mode requirements` or `-Mode baseline`, prints no warning, whether inspection succeeded or failed. A run with `-Mode documentation` prints exactly one warning line, with exactly one `WARNING: ` prefix: the "not declared" text when inspection succeeded without finding `Mode`, or the "not confirmed" text when inspection failed.
 
   In addition:
   - **Summary line.** On successful completion, in either case, the summary line reads `Validation   : PASS (validator called without -Mode; documentation-mode rules NOT applied)` instead of `Validation   : PASS`.
@@ -534,6 +539,23 @@ Only the files listed under "Affected Files" are created or modified. Nothing un
 **Source:** USER
 
 New records use the existing 14-field schema in the existing column order. Existing `logs/model-calls.jsonl` and `logs/model-calls.csv` are only appended to, never rewritten.
+
+### NFR-006 — Test assertions do not depend on localized or wrapped text
+
+**Source:** USER
+
+No test assertion, in a permanent suite or a one-time check, may depend on:
+
+- text produced by PowerShell or .NET rather than by the harness: localized prefixes such as `WARNING:`/`ADVERTENCIA:` from `Write-Warning`, exception messages, `ConvertFrom-Json` errors, error records
+- console wrapping or line splitting
+
+Assertions match only the harness's own fixed wording, exit codes, record-file entries and file contents. When an assertion needs several phrases on the same line, all of them must be harness wording.
+
+**Evidence (verified 2026-11-20):**
+
+- The Windows UI culture of this machine is `es-ES`.
+- In a child `powershell.exe` with redirected output, `Write-Warning` with a 300-character message printed `ADVERTENCIA: ` and split the text over three lines of at most 119 characters.
+- `Write-Host` with a 309-character line printed it as one line.
 
 ## Acceptance Criteria
 
@@ -850,7 +872,7 @@ Verifies: NFR-001, NFR-004.
 
 **Source:** USER
 
-Verifies: FR-017, FR-019.
+Verifies: FR-017, FR-019, NFR-006.
 
 Run with:
 
@@ -862,9 +884,9 @@ Run with:
 **In documentation mode,** `specify.ps1 -Mode documentation`:
 
 - exits 0. Because that script would reject `-Mode` with a binding error, exit 0 proves `-Mode` was not passed.
-- prints exactly one line that starts with `WARNING: ` and contains:
-  - "does not declare a -Mode parameter"
-  - "documentation-mode validation rules are NOT applied"
+- prints exactly one line that starts with `WARNING: `. That line:
+  - contains `WARNING: ` exactly once
+  - contains both "does not declare a -Mode parameter" and "documentation-mode validation rules are NOT applied", which shows the warning was not split over several lines
 - does not contain `WARNING: WARNING:` anywhere in its output
 - prints the summary line `Validation   : PASS (validator called without -Mode; documentation-mode rules NOT applied)`
 
@@ -878,7 +900,7 @@ Run with:
 
 **Source:** USER
 
-Verifies: FR-008, FR-017, FR-019.
+Verifies: FR-008, FR-017, FR-019, NFR-006.
 
 **Simple validator ("not declared" case).** Run `specify.ps1 -Mode documentation` with:
 
@@ -908,8 +930,11 @@ In the requirements run, no FR-019 warning is printed.
 
 In the documentation run, exactly one line starting with `WARNING: ` is printed. It:
 
-- contains "support for -Mode could not be confirmed"
+- contains `WARNING: ` exactly once
+- contains both "support for -Mode could not be confirmed" and "documentation-mode validation rules are NOT applied", so it was not split
 - does not contain "does not declare"
+
+The suite does not check the `<reason>` text (NFR-006).
 
 **One-time check:** in the implementation, confirm that the unchanged `specify.ps1` from commit `2e85dbe`, extracted into `TEMP` with `git show`, also exits 2 for the same generated validator and the same injected mocks with `-Mode requirements`. Record the result in the implementation report.
 
@@ -968,7 +993,7 @@ Verifies: FR-011, FR-018.
 
 **Source:** USER
 
-Verifies: FR-014, NFR-002.
+Verifies: FR-014, NFR-002, NFR-006.
 
 **Setup.** Build a temporary root under `TEMP` containing:
 
@@ -990,13 +1015,13 @@ The stubs never call a model. `AI_HARNESS_MODEL` is unset.
 **Each of (a) to (d) without `-IncludeLive`:**
 
 - exits 0 with `STATUS: PASS WITH SKIPS`
-- reports `test-spec-integration.ps1` as SKIPPED, with a detail containing "model could not be resolved", `spec-reviewer` and the reason
-- shows no FAIL line, no `test-all configuration` result, no `test-all internal error` and no unhandled exception text
+- reports `test-spec-integration.ps1` as SKIPPED, with a detail containing "model could not be resolved" and `spec-reviewer`
+- shows no FAIL line, no `test-all configuration` result and no `test-all internal error`. test-all reports an unexpected exception as `test-all internal error`, so these checks, with the exit code, stand in for searching the output for exception text.
 
 **Each of (a) to (d) with `-IncludeLive`:**
 
 - exits 1 with `STATUS: FAIL`
-- reports `test-spec-integration.ps1` as FAIL with "precondition not met, NOT executed: model could not be resolved" plus the reason
+- reports `test-spec-integration.ps1` as FAIL with "precondition not met, NOT executed: model could not be resolved" and `spec-reviewer`
 - records **zero** calls to the fake: no `/api/tags` and no generation request
 - does not execute the stub `test-spec-integration.ps1`
 
@@ -1004,6 +1029,8 @@ The stubs never call a model. `AI_HARNESS_MODEL` is unset.
 
 - **(e) Valid config, without `-IncludeLive`:** `agentModels.spec-reviewer` is `phase0-fake:1b`. The run exits 0, and the SKIPPED detail names `phase0-fake:1b`.
 - **(f) Bad table entry:** in the copied test-all, the `test-spec-integration.ps1` entry has neither `Model` nor `ModelAgent`. With a valid config, the run reports a `test-all configuration` FAIL and exits 1, both without and with `-IncludeLive`. With `-IncludeLive`, it records zero calls to the fake.
+
+**Reason text.** No case checks the `<reason>` text. It comes from .NET, `ConvertFrom-Json` or `Resolve-HarnessModel` and may be localized (NFR-006). Only the harness's own wording ("model could not be resolved", "precondition not met, NOT executed") and the agent name are asserted.
 
 **Recording.** Put the results in the implementation report.
 
@@ -1050,6 +1077,18 @@ The suite also includes one case in which the temporary `.ai/config.json` is del
 - `review-spec.ps1` exits 2
 - the suite counts this as the expected outcome of that negative case
 
+### AC-031 — Test assertions use only harness wording (inspection)
+
+**Source:** USER
+
+Verifies: NFR-006.
+
+Check by reading the code of `test-validate-spec.ps1`, `test-mode-propagation.ps1`, `test-agent-telemetry.ps1` and the AC-028 one-time check:
+
+- No assertion matches `ADVERTENCIA`, a `WARNING:` prefix produced by `Write-Warning`, an exception message, a `ConvertFrom-Json` error or any other text produced by PowerShell or .NET.
+- No assertion depends on where the console wraps or splits a line.
+- Every asserted text is wording written by the harness itself, for example `STATUS:` lines, validator messages, the FR-019 warning text, "model could not be resolved", "Model not found" and "Ollama is not reachable at".
+
 ## Traceability Matrix
 
 This table is the inverse of the `Verifies:` lines above. The two must stay identical.
@@ -1079,6 +1118,7 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | NFR-003 | AC-001, AC-009, AC-026 |
 | NFR-004 | AC-022 |
 | NFR-005 | AC-012 |
+| NFR-006 | AC-023, AC-024, AC-028, AC-031 |
 
 | Defect | Covered by |
 |---|---|
@@ -1162,13 +1202,13 @@ There are four work packages (WP), and each one is a separate commit. Run `scrip
 | 3a | **WP-D Harness first.** Build the FR-018 harness and its guards, and confirm that a function can stand in for `Invoke-RestMethod` when a script file is run with `&` (A-02). | — | AC-030 startup checks |
 | 3b | **WP-D Changes.** FR-010 and FR-011 in `lib/config.ps1`, `review-spec.ps1` and `revise-spec.ps1`, plus the full `test-agent-telemetry.ps1` and the AC-017 prompt comparison. | 3a | AC-012 to AC-017, AC-027, AC-030 |
 | 4 | **WP-E Test models and test-all.** FR-013, FR-014, FR-015. | WP-C, because both edit the `test-all` table | AC-018, AC-019, AC-020 (inspection), AC-028 |
-| 5 | Final QA, independent review and human approval. | All (WP-A, WP-C, WP-D, WP-E complete) | AC-021, AC-022, AC-029 |
+| 5 | Final QA, independent review and human approval. | All (WP-A, WP-C, WP-D, WP-E complete) | AC-021, AC-022, AC-029, AC-031 |
 
 Why WP-C depends on WP-A: at run time it doesn't. The parameter check makes `specify.ps1` safe with either validator; the old one is simply called as before. But AC-011 needs the new validator's documentation-mode rules.
 
 WP-D can be done in parallel with WP-A, WP-C and WP-E. WP-E must come after WP-C.
 
-AC-029 is checked in step 5, because it inspects code from both WP-D (the availability helper) and WP-E (the `test-all` precondition), and WP-D may finish after WP-E.
+AC-029 is checked in step 5, because it inspects code from both WP-D (the availability helper) and WP-E (the `test-all` precondition), and WP-D may finish after WP-E. AC-031 is checked in step 5 for the same reason: it inspects the suites of WP-A, WP-C and WP-D and the AC-028 check of WP-E. Each WP should still follow NFR-006 as it writes its tests.
 
 ## Offline Verification Strategy
 
@@ -1177,6 +1217,7 @@ AC-029 is checked in step 5, because it inspects code from both WP-D (the availa
   - `test-syntax.ps1` must parse all new and changed `.ps1` files.
   - Run the AC-018 `Select-String` check.
   - Do the AC-029 inspection.
+  - Do the AC-031 inspection.
   - Run the guard 4 check of FR-018.
 - **Validator (AC-001 to AC-008, AC-025, AC-026).**
   - Run the real `validate-spec.ps1` as a child `powershell.exe`, once per fixture and mode.
@@ -1223,6 +1264,7 @@ AC-029 is checked in step 5, because it inspects code from both WP-D (the availa
 - **`AI_HARNESS_MODEL` is set.** The integration suite, `test-all` and the reviewer all resolve through the same `Resolve-HarnessModel` chain, so they agree. With the variable set, test-all's resolution succeeds even if `.ai/config.json` is missing, which is consistent with the reviewer.
 - **Telemetry write failure** (locked file, read-only `logs/`). A warning is printed and exit codes are unchanged.
 - **Invalid `-Mode` passed directly to the validator.** PowerShell's parameter binding rejects it with exit 1, the same code as FAIL. This is existing behavior for argument errors.
+- **A script path that contains `[` or `]`.** The existing `Test-Path` checks in `specify.ps1` (lines 79-93) treat brackets as wildcards. Such a path is reported as not found (unless the pattern happens to match another file), and the run stops before the FR-008 check, exactly as today. Phase 0 documents this limitation and does not change it (A-05).
 
 ## Dependencies
 
@@ -1265,7 +1307,7 @@ To roll back everything, revert in the order E, D, C, A.
 
 ## Resolved Decisions
 
-Confirmed on 2026-11-19:
+OD-01 to OD-06 were confirmed on 2026-11-19, and OD-07 on 2026-11-20:
 
 | ID | Decision | Effect on this spec |
 |---|---|---|
@@ -1275,6 +1317,7 @@ Confirmed on 2026-11-19:
 | OD-04 | Accept: telemetry only for generation requests actually sent | FR-011 |
 | OD-05 | Accept: `None.` is ordinary text, which keeps current behavior | None-marker definition, FR-004, FR-007, AC-025 |
 | OD-06 | Accept: test-all resolves the live-suite model on a best-effort basis. Offline runs never fail because of it; `-IncludeLive` runs fail without contacting Ollama. | FR-014, NFR-003, AC-028, RK-07 |
+| OD-07 | Accept: print the FR-019 warning with `Write-Host` as one line with a literal `WARNING: ` prefix, with the exception type name as `<reason>`. This reverses the Revision 2 reliance on `Write-Warning`. | FR-019, NFR-006, AC-023, AC-024, AC-031 |
 
 ## Open Questions
 
@@ -1283,9 +1326,12 @@ None
 ## Assumptions
 
 - **A-01:** `-RunnerScript`, `-ValidatorScript`, `-ReviewerScript` and `-ReviserScript` on `specify.ps1` are test seams. Revision 1 no longer depends on this assumption for validators, because FR-019 preserves validators that don't declare `-Mode` whoever uses them.
-- **A-02:** Inside the child test process, a function named `Invoke-RestMethod` takes precedence over the cmdlet for scripts run with `&`. This was verified with script blocks on 2026-11-19, and is confirmed for script files in WP-D step 3a before anything depends on it. FR-018 guards 2 and 3 make a wrong assumption fail the test rather than send a real request.
+- **A-02 (UNVERIFIED for script files):** Inside the child test process, a function named `Invoke-RestMethod` takes precedence over the cmdlet for scripts run with `&`. This was verified with script blocks on 2026-11-19, and is confirmed for script files in WP-D step 3a before anything depends on it. FR-018 guards 2 and 3 make a wrong assumption fail the test rather than send a real request.
 - **A-03:** The configured `agentModels.spec-reviewer` (`deepseek-r1:32b`) is the model the live reviewer test is meant to exercise. This follows from defect 6 in the Phase 0 request.
 - **A-04:** The previous audit recovered from the earlier session transcript is complete for Phase 0. No copy exists in the repository, in the project memory, or in the sibling backup folder `AI-Dev-Harness-backup-20261117-104625`, which was searched on 2026-11-19 and predates the audit.
+- **A-05 (decision recorded as an assumption):** script paths that contain `[` or `]` are not supported, and Phase 0 documents this rather than switching to `-LiteralPath`-style resolution. This is the smaller change: the existing `Test-Path` checks already reject such paths before the FR-008 check is reached (verified 2026-11-20: `Test-Path` returned `False` for a validator under a `br[1]` folder, while `Test-Path -LiteralPath`, `Get-Command` and `&` all worked). Changing those checks would alter existing behavior outside Phase 0's defects (NFR-004). The assumption is that nobody relies on such paths. If they do, supporting them is a separate change.
+- **A-06 (to confirm):** when `.Parameters` is `$null`, `<reason>` is the fixed text `no parameter metadata`. OD-07 defines `<reason>` as an exception type name, but in this case no exception is raised (see Context). The example in the Revision 3 request, `ParseException`, does not occur in this case. No test checks `<reason>` (NFR-006), so the wording can change without affecting any criterion.
+- **A-07 (UNVERIFIED):** a validator that fails to parse makes `specify.ps1` exit 2, today and after Phase 0. AC-024 uses 2 as a fixed expected value. Its one-time check against the `2e85dbe` version of `specify.ps1` confirms this during implementation; until then it is an assumption.
 
 ## Revision History
 
@@ -1294,6 +1340,7 @@ None
 | Draft | 2026-11-19 | First extraction from the audit's Phase 0. |
 | Revision 1 | 2026-11-19 | Applied the read-only review findings and the confirmed decisions OD-01 to OD-05. See the list below. |
 | Revision 2 | 2026-11-19 | Applied the final audit findings and decision OD-06. See the list below. |
+| Revision 3 | 2026-11-20 | Applied decision OD-07 (the FR-019 warning uses `Write-Host`) and the test-wording rule NFR-006. See the list below. |
 
 **Revision 1 changes:**
 
@@ -1332,9 +1379,25 @@ None
   - AC-028 now also verifies NFR-002.
 - **FR-019:**
   - The warning now has two variants: "not declared", and "not confirmed" for when inspection failed.
-  - The warning text no longer includes the `WARNING: ` prefix, because `Write-Warning` adds it.
+  - The warning was to be printed with `Write-Warning`, relying on it to add the `WARNING: ` prefix. Superseded in Revision 3 (OD-07).
   - The summary line now reads "validator called without -Mode".
   - AC-023 and AC-024 check both variants, and check that the prefix appears only once.
 - **Context:** gains the verified points where inspection can fail.
 - **AC-026:** the expected sequence now starts with the header line, and the separate, contradictory header assertion was removed.
+
+**Revision 3 changes:**
+
+- **FR-019 (OD-07):**
+  - The documentation-mode warning is printed with `Write-Host` as one line, with the literal, non-localized `WARNING: ` prefix written into both texts. `Write-Warning` is no longer used.
+  - `<reason>` is the exception type name, never the message.
+  - The "when the warning appears" rule states the distinction explicitly: no warning without `-Mode` or in requirements and baseline modes; exactly one line in documentation mode.
+- **Context, FR-008, FR-019:** corrected the fact about scripts that fail to parse. `.Parameters` returns `$null` rather than throwing, and `$null` counts as a failed inspection.
+- **New NFR-006 and AC-031:** no test assertion may depend on localized PowerShell or .NET text or on console wrapping. AC-023, AC-024 and AC-028 now also verify NFR-006.
+- **AC-023, AC-024:** the warning line must contain `WARNING: ` exactly once and contain two phrases from the same warning text, which shows it was not split. AC-024 does not check `<reason>`.
+- **AC-028:** asserts only the harness's own wording and the agent name, not the reason text. Searching for "unhandled exception text" is replaced by the `test-all internal error` check.
+- **FR-017:** states that AC-011 sets `-ValidatorScript` explicitly to the real `validate-spec.ps1` and that every other injected script is a mock.
+- **Paths with `[` or `]`:** documented as a limitation (edge case and A-05) instead of switching to `-LiteralPath`.
+- **Assumptions:** A-02 is marked UNVERIFIED for script files. New A-05 (bracket paths), A-06 (`<reason>` text when `.Parameters` is `$null`, to confirm) and A-07 (exit 2 for a validator that fails to parse, UNVERIFIED).
+- **Execution order and verification strategy:** AC-031 is checked in step 5.
+- **Resolved Decisions:** added OD-07.
 - **Execution order:** AC-029 moved to step 5, after both WP-D and WP-E.

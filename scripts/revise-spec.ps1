@@ -30,6 +30,7 @@ foreach ($required in @(
 }
 
 . (Join-Path $PSScriptRoot "lib\config.ps1")
+. (Join-Path $PSScriptRoot "lib\telemetry.ps1")
 
 $config = Get-HarnessConfig -ConfigPath $configFile
 
@@ -143,6 +144,12 @@ available evidence do not support them. Write None for empty sections.
 Return ONLY the complete revised specification.
 "@
 
+# FR-010: no generation request unless Ollama is reachable and the model installed.
+$availabilityProblem = Test-HarnessModelAvailable -Model $Model -Config $config
+if ($availabilityProblem) {
+    throw $availabilityProblem
+}
+
 Write-Host "Sending specification to reviser..." -ForegroundColor Yellow
 Write-Host ""
 
@@ -150,7 +157,9 @@ $revision = Invoke-HarnessGenerate `
     -Model $Model `
     -System $systemPrompt `
     -Prompt "Revise the specification according to the original request and review findings." `
-    -Config $config
+    -Config $config `
+    -TelemetryAgent "spec-reviser" `
+    -TelemetryRoot $root
 
 if ([string]::IsNullOrWhiteSpace($revision)) {
     throw "Reviser returned an empty response."

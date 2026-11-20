@@ -30,6 +30,7 @@ foreach ($required in @(
 
 try {
     . (Join-Path $PSScriptRoot "lib\config.ps1")
+    . (Join-Path $PSScriptRoot "lib\telemetry.ps1")
 
     $config = Get-HarnessConfig -ConfigPath $configFile
 
@@ -107,6 +108,12 @@ Follow the reviewer output format exactly.
 Do not claim PASS without actually reviewing the specification.
 "@
 
+# FR-010: no generation request unless Ollama is reachable and the model installed.
+$availabilityProblem = Test-HarnessModelAvailable -Model $Model -Config $config
+if ($availabilityProblem) {
+    exit 2
+}
+
 Write-Host "Sending specification to reviewer..." -ForegroundColor Yellow
 Write-Host ""
 
@@ -115,7 +122,9 @@ try {
         -Model $Model `
         -System $systemPrompt `
         -Prompt "Review the specification according to your assigned role." `
-        -Config $config
+        -Config $config `
+        -TelemetryAgent "spec-reviewer" `
+        -TelemetryRoot $root
 }
 catch {
     Write-Host "=== OLLAMA ERROR ===" -ForegroundColor Red

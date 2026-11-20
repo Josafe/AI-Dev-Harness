@@ -1,11 +1,26 @@
 param(
-    [string]$Model = "qwen2.5-coder:32b"
+    [string]$Model
 )
 
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot
 $reviewer = Join-Path $PSScriptRoot "review-spec.ps1"
+
+# FR-013: without -Model the reviewer resolves its own model exactly as in
+# production (AI_HARNESS_MODEL, agentModels.spec-reviewer, defaultModel), so
+# -Model is passed on only when it was given. The model in use is printed.
+$modelWasProvided = $PSBoundParameters.ContainsKey('Model')
+. (Join-Path $PSScriptRoot "lib\config.ps1")
+$resolvedModel = Resolve-HarnessModel `
+    -Agent "spec-reviewer" `
+    -ModelWasProvided $modelWasProvided `
+    -ExplicitModel $Model `
+    -Config (Get-HarnessConfig -ConfigPath (Join-Path $root ".ai\config.json"))
+$reviewerModelArguments = @()
+if ($modelWasProvided) {
+    $reviewerModelArguments = @("-Model", $Model)
+}
 
 $validSpec = Join-Path $root "tests\fixtures\minimal-valid-spec.md"
 $invalidSpec = Join-Path $root "tests\fixtures\semantic-invalid-spec.md"
@@ -39,7 +54,7 @@ function Invoke-ReviewerTest {
 
     Write-Host ""
     Write-Host "=== INTEGRATION TEST: $Name ===" -ForegroundColor Cyan
-    Write-Host "Model: $Model"
+    Write-Host "Model: $resolvedModel"
     Write-Host "Expected exit code: $ExpectedExitCode"
 
     try {
@@ -49,7 +64,7 @@ function Invoke-ReviewerTest {
             -File $reviewer `
             -Task $task `
             -SpecFile $SpecFile `
-            -Model $Model 2>&1
+            @reviewerModelArguments 2>&1
 
         $actualExitCode = $LASTEXITCODE
 

@@ -1,8 +1,4 @@
 
-param(
-    [string]$Model = "qwen2.5-coder:32b"
-)
-
 $ErrorActionPreference = "Stop"
 
 $root = Split-Path -Parent $PSScriptRoot

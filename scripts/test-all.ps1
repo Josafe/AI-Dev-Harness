@@ -91,7 +91,10 @@ $heartbeatSeconds = 60
 # offline suites with default settings.
 #   Order      run order (default 50; live suites 90)
 #   Requires   'ollama' = live suite: SKIPPED unless -IncludeLive
-#   Model      model that must be installed for a requested live suite
+#   Model      literal model that must be installed for a requested live suite
+#   ModelAgent agent whose model must be installed, resolved like that agent
+#              resolves it (lib\config.ps1: AI_HARNESS_MODEL, agentModels,
+#              defaultModel). A live entry has exactly one of Model or ModelAgent.
 #   TimeoutSec per-suite timeout
 #   Isolation  'sandbox' = run from a verified copy in a temp sandbox
 #   Skip       justification: never executed, reported SKIPPED / NOT VERIFIED
@@ -112,12 +115,12 @@ $suiteOverrides = @{
     }
     "test-spec-integration.ps1" = @{
         Requires   = "ollama"
-        Model      = "qwen2.5-coder:32b"
+        ModelAgent = "spec-reviewer"
         TimeoutSec = 3600
-        Reason     = "Calls a real local model: slow, non-deterministic, needs Ollama and the model above (must match the suite's own -Model default)."
+        Reason     = "Calls a real local model: slow, non-deterministic, needs Ollama and the spec-reviewer model resolved from the configuration, exactly as the reviewer resolves it."
     }
 }
-$allowedOverrideFields = @("Order", "Requires", "Model", "TimeoutSec", "Isolation", "Skip", "Reason")
+$allowedOverrideFields = @("Order", "Requires", "Model", "ModelAgent", "TimeoutSec", "Isolation", "Skip", "Reason")
 
 $script:results = New-Object 'System.Collections.Generic.List[object]'
 $script:runTemp = $null
@@ -230,6 +233,22 @@ function Get-ContractViolations {
     return $violations
 }
 
+# A live entry (Requires = 'ollama') needs exactly one of Model or ModelAgent,
+# as a non-blank string. Uses only the table, never .ai\config.json.
+function Get-LiveEntryProblem {
+    param([hashtable]$Entry)
+
+    $fields = @(@("Model", "ModelAgent") | Where-Object { $Entry.ContainsKey($_) })
+    if ($fields.Count -ne 1) {
+        return "Requires = 'ollama' needs exactly one of Model or ModelAgent"
+    }
+    $value = $Entry[$fields[0]]
+    if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) {
+        return "$($fields[0]) must be a non-blank string"
+    }
+    return ""
+}
+
 function Get-OverrideProblems {
     param([string[]]$DiscoveredNames)
 
@@ -246,7 +265,10 @@ function Get-OverrideProblems {
         if ([string]::IsNullOrWhiteSpace([string]$entry.Reason)) { $problems += "table entry '$key' has no Reason" }
         if ($entry.ContainsKey("Requires")) {
             if ($entry.Requires -ne "ollama") { $problems += "table entry '$key': Requires must be 'ollama'" }
-            elseif ([string]::IsNullOrWhiteSpace([string]$entry.Model)) { $problems += "table entry '$key': Requires = 'ollama' needs a Model" }
+            else {
+                $liveProblem = Get-LiveEntryProblem -Entry $entry
+                if ($liveProblem) { $problems += "table entry '$key': $liveProblem" }
+            }
         }
         if ($entry.ContainsKey("Isolation") -and $entry.Isolation -ne "sandbox") { $problems += "table entry '$key': Isolation must be 'sandbox'" }
         if ($entry.ContainsKey("Skip") -and [string]::IsNullOrWhiteSpace([string]$entry.Skip)) { $problems += "table entry '$key': Skip needs a justification" }
@@ -603,10 +625,30 @@ function Test-OllamaPrecondition {
     catch { return "Ollama is not reachable at $url ($($_.Exception.Message))" }
 
     $installed = @($tags.models | ForEach-Object { $_.name })
-    if (-not [string]::IsNullOrWhiteSpace($Model) -and ($installed -cnotcontains $Model)) {
+    if (-not [string]::IsNullOrWhiteSpace($Model) -and ($installed -notcontains $Model)) {
         return "model '$Model' is not installed at $url"
     }
     return $null
+}
+
+# Resolves the model of a live entry's ModelAgent on a best-effort basis, with
+# the agent's own chain (lib\config.ps1: AI_HARNESS_MODEL, agentModels,
+# defaultModel). Never throws: a failure is returned as a reason. Sends nothing.
+function Resolve-LiveSuiteModel {
+    param([string]$Agent)
+
+    try {
+        $libPath = Join-Path $scriptsDirectory "lib\config.ps1"
+        if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) { throw "lib\config.ps1 not found: $libPath" }
+        . $libPath
+        $config = Get-HarnessConfig -ConfigPath (Join-Path $repoRoot ".ai\config.json")
+        $model = "$(Resolve-HarnessModel -Agent $Agent -ModelWasProvided $false -Config $config)".Trim()
+        if ([string]::IsNullOrWhiteSpace($model)) { throw "the resolved model is empty" }
+        return [pscustomobject]@{ Model = $model; Problem = "" }
+    }
+    catch {
+        return [pscustomobject]@{ Model = ""; Problem = $_.Exception.Message }
+    }
 }
 
 # ---------------------------------------------------------------------------
@@ -636,13 +678,45 @@ function Invoke-Suite {
         return
     }
     if (& $has "Requires") {
-        if (-not $IncludeLive) {
-            Add-SuiteResult $Suite.Name "SKIPPED" "NOT VERIFIED (not executed): requires Ollama; use -IncludeLive. $($override.Reason)"
+        # An invalid live entry is never executed and its precondition never runs.
+        $entryProblem = Get-LiveEntryProblem -Entry $override
+        if ($entryProblem) {
+            if ($IncludeLive) {
+                Add-SuiteResult $Suite.Name "FAIL" "invalid table entry, NOT executed: $entryProblem"
+            }
+            else {
+                Add-SuiteResult $Suite.Name "SKIPPED" "NOT VERIFIED (not executed): invalid table entry: $entryProblem"
+            }
             return
         }
-        $unmet = Test-OllamaPrecondition -Model $override.Model
+
+        # Best-effort model resolution (FR-014). Offline it only names the model;
+        # with -IncludeLive a failure is a FAIL and no request is sent.
+        $liveModel = [string]$override.Model
+        $modelText = "model '$liveModel'"
+        if (& $has "ModelAgent") {
+            $resolution = Resolve-LiveSuiteModel -Agent $override.ModelAgent
+            if ($resolution.Problem) {
+                $resolutionFailure = "model could not be resolved (agent '$($override.ModelAgent)'): $($resolution.Problem)"
+                if ($IncludeLive) {
+                    Add-SuiteResult $Suite.Name "FAIL" "precondition not met, NOT executed: $resolutionFailure"
+                }
+                else {
+                    Add-SuiteResult $Suite.Name "SKIPPED" "NOT VERIFIED (not executed): $resolutionFailure; use -IncludeLive. $($override.Reason)"
+                }
+                return
+            }
+            $liveModel = $resolution.Model
+            $modelText = "model '$liveModel' (agent '$($override.ModelAgent)')"
+        }
+
+        if (-not $IncludeLive) {
+            Add-SuiteResult $Suite.Name "SKIPPED" "NOT VERIFIED (not executed): requires Ollama and $modelText; use -IncludeLive. $($override.Reason)"
+            return
+        }
+        $unmet = Test-OllamaPrecondition -Model $liveModel
         if ($unmet) {
-            Add-SuiteResult $Suite.Name "FAIL" "precondition not met, NOT executed: $unmet"
+            Add-SuiteResult $Suite.Name "FAIL" "precondition not met, NOT executed: $unmet ($modelText)"
             return
         }
     }

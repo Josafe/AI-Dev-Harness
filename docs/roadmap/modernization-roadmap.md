@@ -14,6 +14,24 @@ It ends with an addendum of findings measured later the same day.
 
 **Exported:** 2026-11-19, at repository HEAD `984eaba`.
 
+## Status 2026-11-20
+
+**Phase 0 is DONE** (FACT): tag `phase0-done`, commit `5ffc33f`; the spec is at Revision 4 ([specs/harness-phase-0-defect-corrections.md](../../specs/harness-phase-0-defect-corrections.md)); the work-package reports and the final QA are in [docs/audits/](../audits/). Defects D-02 and D-03 are closed. Phase 1 is next; its draft spec is [specs/harness-phase-1-config-registry.md](../../specs/harness-phase-1-config-registry.md).
+
+**What was learned and measured after the audit:**
+
+| Finding | Label | Evidence |
+|---|---|---|
+| Ollama 0.40.13 returns the reasoning of `qwen3.5` and `qwen3.6` in a separate `thinking` field, so `stripThinking` is a no-op for these models | FACT | section 9; [docs/audits/2026-11-19-model-validation.md](../audits/2026-11-19-model-validation.md), [docs/audits/2026-11-19-model-validation-2.md](../audits/2026-11-19-model-validation-2.md) |
+| Models in use now: `qwen3.5:9b` for `spec`, `qwen3.6:35b` for `spec-reviewer`, `spec-reviser` and `developer` | FACT | `.ai/config.json` at `5ffc33f` |
+| A script's line endings (CRLF or LF) change the bytes of the prompts built from its here-strings. Prompt golden tests must compare files with equal line endings. | FACT | [docs/audits/2026-11-20-wp-d-implementation.md](../audits/2026-11-20-wp-d-implementation.md), sections 5 and 7 |
+| `test-all.ps1` has a `ModelAgent` field: a live suite's model is resolved from the configuration, not hardcoded | FACT | [docs/audits/2026-11-20-wp-e-implementation.md](../audits/2026-11-20-wp-e-implementation.md) |
+| The reviewer and reviser write telemetry and check model availability before generating (D-02 and D-03 closed) | FACT | [docs/audits/2026-11-20-wp-d-implementation.md](../audits/2026-11-20-wp-d-implementation.md), [docs/audits/2026-11-20-phase0-final-qa.md](../audits/2026-11-20-phase0-final-qa.md) |
+
+**Decisions recorded** (DECISION, 2026-11-20): O-03, O-04, O-16 (provisional), and O-08 and O-15 done; see the table in section 7. O-07 and O-11 stay open and belong to Phase 3.
+
+**Platform decision gate** (open, before Phase 2): stay on Windows PowerShell 5.1, or move the engine to PowerShell 7 or Python. Settle it with a spike of one or two days: the streaming call with an idle timeout (Q-05, O-10). Until then, Phase 1 stays on PowerShell 5.1.
+
 ## How to read this document
 
 | Label | Meaning |
@@ -387,7 +405,7 @@ The audit then proposed FR-001 to FR-008, NFR-001 and NFR-002, and AC-001 to AC-
 - **FR-101** (USER): define registry v2 (`schemaVersion: 2`) in `.ai/config.json` (O-03), with:
   - `ollama {url, healthTimeoutSec}`
   - `defaults {profile, options, charsPerToken, safetyMarginRatio}`
-  - `profiles {<name>: {model, contextWindow, timeoutSec, reservedOutputTokens, reasoning, thinking: "strip"|"keep", options, transport}}`
+  - `profiles {<name>: {model, contextWindow, timeoutSec, reservedOutputTokens, reasoning, think: true|false|default, options, transport}}`. `think` is Ollama's `think` request option. Phase 1 only stores it; Phase 2 uses it. (Replaces the audit's `thinking: "strip"|"keep"`; DECISION, 2026-11-20.)
   - `agents {<name>: {profile, promptFile?}}`
   - `tests {liveReviewerAgent, …}`
 - **FR-102** (USER): one loader, `Get-HarnessRegistry`, accepts v1 or v2 and always returns a normalized v2 object (XR-02).
@@ -622,20 +640,20 @@ The "Status" column was added on 2026-11-19. Everything without a status is stil
 |---|---|---|---|
 | O-01 | Immediate fix for the timeout | `timeoutSec` 2400 for `deepseek-r1:32b`, or map `spec` to a model that doesn't reason; per-profile timeouts arrive in Phase 1 | **DECISION:** deferred (not in Phase 0). The models have since changed; see section 9 and the audit reports. |
 | O-02 | Which model the live tests use | the agent's registry model, with an optional `tests` override | Partly decided: Phase 0 (FR-013/FR-014) makes the live reviewer test use the configured reviewer model |
-| O-03 | Where the registry lives | the same `.ai/config.json`, with `schemaVersion: 2` | open |
-| O-04 | `-Model` together with `-Profile` | reject | open |
+| O-03 | Where the registry lives | the same `.ai/config.json`, with `schemaVersion: 2` | **DECISION (2026-11-20):** the same `.ai/config.json`, `schemaVersion: 2`; v1 is still accepted |
+| O-04 | `-Model` together with `-Profile` | reject | **DECISION (2026-11-20):** reject |
 | O-05 | Documentation mode with FR present but no AC | require AC | **DECISION:** require at least one AC when FR entries are present (Phase 0) |
 | O-06 | Commit or ignore `<target>/.ai-harness/` | commit `specs/` and `changes/`; decide per project | open |
-| O-07 | Is `-TargetPath` required? | yes, with no implicit current-folder default | open |
-| O-08 | Specs in the harness's `specs/` that belong to an unrelated project | move them to that project's `.ai-harness/`, or delete them; don't commit them to the harness | **in progress:** they were committed in `b8cae9f`; a hygiene commit untracks them and ignores them |
+| O-07 | Is `-TargetPath` required? | yes, with no implicit current-folder default | open; belongs to Phase 3 |
+| O-08 | Specs in the harness's `specs/` that belong to an unrelated project | move them to that project's `.ai-harness/`, or delete them; don't commit them to the harness | **DONE** (2026-11-20): they were committed in `b8cae9f`; a hygiene commit untracked them and ignores them |
 | O-09 | Where proposals are stored | the run folder; only the application record goes into the target | open |
 | O-10 | Is streaming required in Phase 2, or optional? | optional and off by default until it has been validated live | open |
-| O-11 | Built-in `-Background`/`cancel`, or rely on Claude's `run_in_background` | build both | open |
+| O-11 | Built-in `-Background`/`cancel`, or rely on Claude's `run_in_background` | build both | open; belongs to Phase 3. **Updated recommendation (not a decision):** rely on Claude Code's own background execution first, and build the harness's own `-Background`, `status` and `cancel` only if that proves insufficient. |
 | O-12 | Save full prompts in run folders | yes, local and git-ignored | open |
 | O-13 | Claude Code allow and deny lists | as in FR-404 | open |
 | O-14 | Task text in telemetry | hash only; full text only in the run folder | open |
-| O-15 | Remove the tracked `.bak` files | a separate hygiene commit | **in progress:** a hygiene commit untracks them; they stay on disk and are ignored by `*.bak` |
-| O-16 | `reservedOutputTokens` per profile | reasoning 32b: 6000; coder: 4096; calibrate in Phase 2 | open. The models have changed, so recalibrate. |
+| O-15 | Remove the tracked `.bak` files | a separate hygiene commit | **DONE** (2026-11-20): a hygiene commit untracked them; they stay on disk and are ignored by `*.bak` |
+| O-16 | `reservedOutputTokens` per profile | reasoning 32b: 6000; coder: 4096; calibrate in Phase 2 | **DECIDED provisionally (2026-11-20):** 4096 for the `fast` profile and 6144 for the `deep` profile; calibrate in Phase 2 (the models changed since the audit) |
 | O-17 | Criteria for promoting the skill to user level | as in FR-405 | open |
 | O-18 | New exit code 4 for unsupported stages (CLI only) | accept | open |
 

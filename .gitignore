@@ -18,3 +18,5 @@ logs/
 specs/portfolio-*
 specs/validation2-*
 specs/model-validation-*
+
+.claude/settings.local.json

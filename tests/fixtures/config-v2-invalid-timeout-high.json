@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "alpha" },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "timeoutSec": 14401 }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

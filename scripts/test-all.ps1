@@ -641,8 +641,8 @@ function Resolve-LiveSuiteModel {
         $libPath = Join-Path $scriptsDirectory "lib\config.ps1"
         if (-not (Test-Path -LiteralPath $libPath -PathType Leaf)) { throw "lib\config.ps1 not found: $libPath" }
         . $libPath
-        $config = Get-HarnessConfig -ConfigPath (Join-Path $repoRoot ".ai\config.json")
-        $model = "$(Resolve-HarnessModel -Agent $Agent -ModelWasProvided $false -Config $config)".Trim()
+        $registry = Get-HarnessRegistry -ConfigPath (Join-Path $repoRoot ".ai\config.json")
+        $model = "$((Resolve-HarnessExecution -Agent $Agent -Registry $registry).model)".Trim()
         if ([string]::IsNullOrWhiteSpace($model)) { throw "the resolved model is empty" }
         return [pscustomobject]@{ Model = $model; Problem = "" }
     }

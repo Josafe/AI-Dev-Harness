@@ -5,7 +5,8 @@ param(
     [ValidateSet("requirements", "baseline", "documentation")]
     [string]$Mode = "requirements",
     [string]$Model,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [string]$Profile
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,15 +33,14 @@ foreach ($required in @(
 . (Join-Path $PSScriptRoot "lib\config.ps1")
 . (Join-Path $PSScriptRoot "lib\telemetry.ps1")
 
-$config = Get-HarnessConfig -ConfigPath $configFile
+$config = Get-HarnessRegistry -ConfigPath $configFile
 
-$Model = Resolve-HarnessModel `
-    -Agent "spec-reviser" `
-    -ModelWasProvided $PSBoundParameters.ContainsKey('Model') `
-    -ExplicitModel $Model `
-    -Config $config
+$executionArguments = @{ Agent = "spec-reviser"; Registry = $config }
+if ($PSBoundParameters.ContainsKey('Model'))   { $executionArguments.Model = $Model }
+if ($PSBoundParameters.ContainsKey('Profile')) { $executionArguments.Profile = $Profile }
+$execution = Resolve-HarnessExecution @executionArguments
 
-$Model = "$Model".Trim()
+$Model = "$($execution.model)".Trim()
 if ([string]::IsNullOrWhiteSpace($Model)) {
     throw "Model name cannot be empty."
 }
@@ -158,6 +158,7 @@ $revision = Invoke-HarnessGenerate `
     -System $systemPrompt `
     -Prompt "Revise the specification according to the original request and review findings." `
     -Config $config `
+    -Execution $execution `
     -TelemetryAgent "spec-reviser" `
     -TelemetryRoot $root
 

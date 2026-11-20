@@ -3,7 +3,8 @@ param(
     [string]$Task,
     [string]$Model,
     [string]$OutputFile,
-    [string]$ContextFile
+    [string]$ContextFile,
+    [string]$Profile
 )
 
 $ErrorActionPreference = "Stop"
@@ -52,24 +53,24 @@ if (-not (Test-Path $instructionsFile -PathType Leaf)) {
 
 # ---------- 3. Configuración y modelo ----------
 
-$config = Get-HarnessConfig -ConfigPath $configFile
+$config = Get-HarnessRegistry -ConfigPath $configFile
 
-$Model = Resolve-HarnessModel `
-    -Agent $Agent `
-    -ModelWasProvided $PSBoundParameters.ContainsKey('Model') `
-    -ExplicitModel $Model `
-    -Config $config
+$executionArguments = @{ Agent = $Agent; Registry = $config }
+if ($PSBoundParameters.ContainsKey('Model'))   { $executionArguments.Model = $Model }
+if ($PSBoundParameters.ContainsKey('Profile')) { $executionArguments.Profile = $Profile }
+$execution = Resolve-HarnessExecution @executionArguments
 
-$Model = "$Model".Trim()
+$Model = "$($execution.model)".Trim()
 
 if ([string]::IsNullOrWhiteSpace($Model)) {
     throw "Model name cannot be empty."
 }
 
-$ollamaUrl     = (Get-ConfigValue $config "ollamaUrl" "http://localhost:11434").TrimEnd('/')
-$timeoutSec    = [int](Get-ConfigValue $config "timeoutSec" 600)
-$stripThinking = [bool](Get-ConfigValue $config "stripThinking" $true)
-$options       = Get-ConfigValue $config "options" $null
+$ollamaUrl        = ([string]$config.ollama.url).TrimEnd('/')
+$healthTimeoutSec = [int]$config.ollama.healthTimeoutSec
+$timeoutSec       = [int]$execution.timeoutSec
+$stripThinking    = [bool]$config.defaults.stripThinking
+$options          = $execution.options
 
 Write-Host ""
 Write-Host "=== AI Development Harness ===" -ForegroundColor Cyan
@@ -81,7 +82,7 @@ Write-Host ""
 # ---------- 4. Comprobar Ollama y el modelo ----------
 
 try {
-    $ollamaTags = Invoke-RestMethod -Uri "$ollamaUrl/api/tags" -Method Get -TimeoutSec 15
+    $ollamaTags = Invoke-RestMethod -Uri "$ollamaUrl/api/tags" -Method Get -TimeoutSec $healthTimeoutSec
 }
 catch {
     throw "Ollama is not reachable at $ollamaUrl. Make sure Ollama is running."
@@ -148,7 +149,7 @@ $payload = @{
     prompt = $Task
     stream = $false
 }
-if ($options) { $payload.options = $options }
+if (@($options.PSObject.Properties).Count -gt 0) { $payload.options = $options }
 
 $body      = $payload | ConvertTo-Json -Depth 10
 $bodyBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($body)

@@ -4,7 +4,8 @@ param(
     [ValidateSet("requirements", "baseline", "documentation")]
     [string]$Mode = "requirements",
     [string]$Model,
-    [string]$OutputFile
+    [string]$OutputFile,
+    [string]$Profile
 )
 
 $ErrorActionPreference = "Stop"
@@ -32,15 +33,14 @@ try {
     . (Join-Path $PSScriptRoot "lib\config.ps1")
     . (Join-Path $PSScriptRoot "lib\telemetry.ps1")
 
-    $config = Get-HarnessConfig -ConfigPath $configFile
+    $config = Get-HarnessRegistry -ConfigPath $configFile
 
-    $Model = Resolve-HarnessModel `
-        -Agent "spec-reviewer" `
-        -ModelWasProvided $PSBoundParameters.ContainsKey('Model') `
-        -ExplicitModel $Model `
-        -Config $config
+    $executionArguments = @{ Agent = "spec-reviewer"; Registry = $config }
+    if ($PSBoundParameters.ContainsKey('Model'))   { $executionArguments.Model = $Model }
+    if ($PSBoundParameters.ContainsKey('Profile')) { $executionArguments.Profile = $Profile }
+    $execution = Resolve-HarnessExecution @executionArguments
 
-    $Model = "$Model".Trim()
+    $Model = "$($execution.model)".Trim()
     if ([string]::IsNullOrWhiteSpace($Model)) {
         throw "Model name cannot be empty."
     }
@@ -123,6 +123,7 @@ try {
         -System $systemPrompt `
         -Prompt "Review the specification according to your assigned role." `
         -Config $config `
+        -Execution $execution `
         -TelemetryAgent "spec-reviewer" `
         -TelemetryRoot $root
 }

@@ -1,0 +1,4 @@
+{
+  "defaultModel": "test-model-a",
+  "agentModels": { "spec": "test-model-b" }
+}

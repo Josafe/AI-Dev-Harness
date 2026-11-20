@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "absent" },
+  "profiles": {
+    "absent": { "model": "test-model-a" },
+    "on": { "model": "test-model-b", "think": true },
+    "off": { "model": "test-model-c", "think": false },
+    "named": { "model": "test-model-d", "think": "default" }
+  }
+}

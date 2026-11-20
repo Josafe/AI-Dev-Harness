@@ -336,7 +336,8 @@ function Get-HarnessRegistry {
     return ConvertTo-HarnessRegistry -Config (Get-HarnessConfig -ConfigPath $ConfigPath)
 }
 
-# Distinct profile models, in profile order (case-insensitive). Callers wrap the\r\n# call in @() so that zero or one model still gives an array.
+# Distinct profile models, in profile order (case-insensitive). Callers wrap the
+# call in @() so that zero or one model still gives an array.
 function Get-HarnessRegistryModels {
     param([Parameter(Mandatory = $true)]$Registry)
 

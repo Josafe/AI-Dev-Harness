@@ -1,6 +1,9 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$SpecFile
+    [string]$SpecFile,
+
+    [ValidateSet("requirements", "baseline", "documentation")]
+    [string]$Mode = "requirements"
 )
 
 $ErrorActionPreference = "Stop"
@@ -58,22 +61,66 @@ $frMatch = [regex]::Match(
 )
 $fr = ($frMatch.Groups[1].Value -replace '```text|```', '').Trim()
 
-if ($fr -eq 'None') {
+# Documentation mode: FR may be "None" (FR-003); only an empty or "None"
+# Context is insufficient input (FR-004). A failed capture counts as empty.
+$isDocumentation = ($Mode -eq 'documentation')
+
+if (-not $isDocumentation -and $fr -eq 'None') {
     Write-Host "STATUS: INSUFFICIENT INPUT" -ForegroundColor Yellow
     Write-Host "The task did not contain enough information. See Open Questions."
     exit 3
 }
 
+if ($isDocumentation) {
+    $contextMatch = [regex]::Match(
+        $content,
+        '(?ms)^## Context\s*\r?\n(.*?)(?=^## )'
+    )
+    $context = ($contextMatch.Groups[1].Value -replace '```text|```', '').Trim()
+
+    if ($context -eq '' -or $context -eq 'None') {
+        Write-Host "STATUS: INSUFFICIENT INPUT" -ForegroundColor Yellow
+        Write-Host "The task did not contain enough information. See Open Questions."
+        exit 3
+    }
+}
+
 # 3. Content checks
 $validationErrors = @()
 
-if ($content -notmatch '(?m)^### FR-\d+') {
+if ($isDocumentation) {
+    # FR-007: each section is the None marker or contains a numbered entry.
+    $acMatch = [regex]::Match(
+        $content,
+        '(?ms)^## Acceptance Criteria\s*\r?\n(.*?)(?=^## )'
+    )
+    $ac = ($acMatch.Groups[1].Value -replace '```text|```', '').Trim()
+
+    if ($fr -ne 'None' -and $frMatch.Groups[1].Value -notmatch '(?m)^### FR-\d+') {
+        $validationErrors += "Functional Requirements section must be None or contain at least one '### FR-n' entry."
+    }
+    if ($ac -ne 'None' -and $acMatch.Groups[1].Value -notmatch '(?m)^### AC-\d+') {
+        $validationErrors += "Acceptance Criteria section must be None or contain at least one '### AC-n' entry."
+    }
+
+    # FR-005: FR entries require AC entries.
+    if ($content -match '(?m)^### FR-\d+' -and $content -notmatch '(?m)^### AC-\d+') {
+        $validationErrors += "No acceptance criteria found."
+    }
+
+    # FR-006: Source lines are required only when numbered entries exist.
+    if ($content -match '(?m)^### (FR|NFR|AC)-\d+' -and $content -notmatch '(?im)^\*\*Source:\*\*') {
+        $validationErrors += "No requirement source annotations found."
+    }
+}
+
+if (-not $isDocumentation -and $content -notmatch '(?m)^### FR-\d+') {
     $validationErrors += "No functional requirements found."
 }
-if ($content -notmatch '(?m)^### AC-\d+') {
+if (-not $isDocumentation -and $content -notmatch '(?m)^### AC-\d+') {
     $validationErrors += "No acceptance criteria found."
 }
-if ($content -notmatch '(?im)^\*\*Source:\*\*') {
+if (-not $isDocumentation -and $content -notmatch '(?im)^\*\*Source:\*\*') {
     $validationErrors += "No requirement source annotations found."
 }
 

@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "ollama": { "healthTimeoutSec": "abc" },
+  "profiles": {
+    "alpha": { "model": "test-model-a" }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

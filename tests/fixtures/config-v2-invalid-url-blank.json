@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "ollama": { "url": "" },
+  "profiles": {
+    "alpha": { "model": "test-model-a" }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

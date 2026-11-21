@@ -150,6 +150,17 @@ function Assert-HarnessRegistryV2 {
         throw "registry_invalid: safetyMarginRatio (defaults.safetyMarginRatio must be a number >= 0)"
     }
 
+    $healthTimeout = Get-ConfigValue $ollama "healthTimeoutSec" $null
+    if ($null -ne $healthTimeout -and
+        (-not (Test-HarnessInteger $healthTimeout) -or $healthTimeout -lt 1 -or $healthTimeout -gt 600)) {
+        throw "registry_invalid: ollama.healthTimeoutSec (ollama.healthTimeoutSec must be an integer from 1 to 600)"
+    }
+
+    $ollamaUrl = Get-ConfigValue $ollama "url" $null
+    if ($null -ne $ollamaUrl -and ($ollamaUrl -isnot [string] -or [string]::IsNullOrWhiteSpace($ollamaUrl))) {
+        throw "registry_invalid: ollama.url (ollama.url must be a non-blank string)"
+    }
+
     $defaultTimeout = Get-ConfigValue $defaults "timeoutSec" $null
     if ($null -ne $defaultTimeout -and
         (-not (Test-HarnessInteger $defaultTimeout) -or $defaultTimeout -lt 30 -or $defaultTimeout -gt 14400)) {

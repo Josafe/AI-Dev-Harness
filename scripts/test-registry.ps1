@@ -426,6 +426,63 @@ try {
         }
     }
 
+    # ollama.healthTimeoutSec: an integer from 1 to 600; ollama.url: a non-blank string (FR-103).
+    foreach ($case in @(
+        @{ File = "config-v2-health-1.json";   Value = 1 },
+        @{ File = "config-v2-health-600.json"; Value = 600 }
+    )) {
+        Test-Case "AC-114 healthTimeoutSec accepted: $($case.Value)" {
+            $path = Join-Path $fixtures $case.File
+            Assert-Equal "loader" $case.Value (Get-HarnessRegistry -ConfigPath $path).ollama.healthTimeoutSec
+            Assert-Equal "wrapper" "test-model-a" (Resolve-HarnessModel -Agent "spec" -ModelWasProvided $false -Config (Get-HarnessConfig -ConfigPath $path))
+        }
+    }
+
+    foreach ($case in @(
+        @{ File = "config-v2-invalid-health-0.json";        Rule = "ollama.healthTimeoutSec" },
+        @{ File = "config-v2-invalid-health-negative.json"; Rule = "ollama.healthTimeoutSec" },
+        @{ File = "config-v2-invalid-health-601.json";      Rule = "ollama.healthTimeoutSec" },
+        @{ File = "config-v2-invalid-health-text.json";     Rule = "ollama.healthTimeoutSec" },
+        @{ File = "config-v2-invalid-health-fraction.json"; Rule = "ollama.healthTimeoutSec" },
+        @{ File = "config-v2-invalid-url-blank.json";       Rule = "ollama.url" }
+    )) {
+        Test-Case "AC-114 rejected: $($case.File)" {
+            $path = Join-Path $fixtures $case.File
+            Assert-Throws "loader" { Get-HarnessRegistry -ConfigPath $path } "registry_invalid: $($case.Rule)"
+            Assert-Throws "wrapper" { Resolve-HarnessModel -Agent "spec" -ModelWasProvided $false -Config (Get-HarnessConfig -ConfigPath $path) } "registry_invalid: $($case.Rule)"
+        }
+    }
+
+    Test-Case "AC-114 a whitespace-only or non-string ollama.url is rejected" {
+        foreach ($text in @('"   "', '5')) {
+            $path = Write-TempText "url-odd.json" ('{ "schemaVersion": 2, "ollama": { "url": ' + $text + ' } }')
+            Assert-Throws "url $text" { Get-HarnessRegistry -ConfigPath $path } "registry_invalid: ollama.url"
+        }
+    }
+
+    Test-Case "AC-114 a v1 file without the field keeps the default 15 and still loads; v1 values are not validated" {
+        Assert-Equal "v1 minimal" 15 (Get-HarnessRegistry -ConfigPath (Join-Path $fixtures "config-v1-minimal.json")).ollama.healthTimeoutSec
+        Assert-Equal "v1 current" 15 (Get-HarnessRegistry -ConfigPath $v1Path).ollama.healthTimeoutSec
+        $blankV1 = Write-TempText "v1-blank-url.json" '{ "ollamaUrl": "", "defaultModel": "test-model-a" }'
+        Assert-Equal "v1 blank url loads" "" (Get-HarnessRegistry -ConfigPath $blankV1).ollama.url
+    }
+
+    Test-Case "AC-114 a v2 file without the field or without ollama keeps the defaults" {
+        $noOllama = Write-TempText "v2-no-ollama.json" '{ "schemaVersion": 2 }'
+        $registry = Get-HarnessRegistry -ConfigPath $noOllama
+        Assert-Equal "healthTimeoutSec" 15 $registry.ollama.healthTimeoutSec
+        Assert-Equal "url" "http://localhost:11434" $registry.ollama.url
+        $urlOnly = Write-TempText "v2-url-only.json" '{ "schemaVersion": 2, "ollama": { "url": "http://localhost:11434" } }'
+        Assert-Equal "healthTimeoutSec with url only" 15 (Get-HarnessRegistry -ConfigPath $urlOnly).ollama.healthTimeoutSec
+    }
+
+    Test-Case "AC-103 an explicit schemaVersion 1 or null is invalid, not v1" {
+        foreach ($text in @("1", "null")) {
+            $path = Write-TempText "schema-explicit.json" ('{ "schemaVersion": ' + $text + ', "defaultModel": "test-model-a" }')
+            Assert-Throws "schemaVersion $text" { Get-HarnessRegistry -ConfigPath $path } "registry_invalid: schemaVersion"
+        }
+    }
+
     Test-Case "AC-103 a v1 file is not validated (timeoutSec 10 loads)" {
         $path = Join-Path $fixtures "config-v1-timeout-10.json"
         $registry = Get-HarnessRegistry -ConfigPath $path

@@ -595,6 +595,18 @@ try {
         }
     }
 
+    # AC-114: an invalid ollama.healthTimeoutSec is a configuration error (exit 2 for review-spec).
+    foreach ($badHealth in @('"abc"', '0', '601')) {
+        Test-Case "AC-114 review-spec with ollama.healthTimeoutSec $badHealth exits 2 with registry_invalid:" {
+            $badConfig = "{ ""schemaVersion"": 2, ""ollama"": { ""url"": ""$fakeUrl"", ""healthTimeoutSec"": $badHealth }, ""defaults"": { ""profile"": ""alpha"" }, ""profiles"": { ""alpha"": { ""model"": ""test-model-alpha"" } } }"
+            $run = Invoke-Script -Script "review-spec" -ConfigText $badConfig
+            Assert-Guards $run
+            Assert-Equal "exit code" 2 $run.ExitCode
+            Assert-Line $run "registry_invalid: ollama.healthTimeoutSec"
+            Assert-NoRequest $run
+        }
+    }
+
     Write-Host ""
     Write-Host "=== AC-105 -Model with -Profile ===" -ForegroundColor Cyan
     foreach ($entry in $scriptsUnderTest) {

@@ -16,7 +16,9 @@ It ends with an addendum of findings measured later the same day.
 
 ## Status 2026-11-20
 
-**Phase 0 is DONE** (FACT): tag `phase0-done`, commit `5ffc33f`; the spec is at Revision 4 ([specs/harness-phase-0-defect-corrections.md](../../specs/harness-phase-0-defect-corrections.md)); the work-package reports and the final QA are in [docs/audits/](../audits/). Defects D-02 and D-03 are closed. Phase 1 is next; its draft spec is [specs/harness-phase-1-config-registry.md](../../specs/harness-phase-1-config-registry.md).
+**Phase 0 is DONE** (FACT): tag `phase0-done`, commit `5ffc33f`; the spec is at Revision 4 ([specs/harness-phase-0-defect-corrections.md](../../specs/harness-phase-0-defect-corrections.md)); the work-package reports and the final QA are in [docs/audits/](../audits/). Defects D-02 and D-03 are closed.
+
+**Phase 1 is DONE** (FACT, 2026-11-21): tag `phase1-done`, commit `d73cefd`; the spec is [specs/harness-phase-1-config-registry.md](../../specs/harness-phase-1-config-registry.md) (Implemented, Revision 3) and the final QA is [docs/audits/2026-11-20-phase1-final-qa.md](../audits/2026-11-20-phase1-final-qa.md). Verified offline only; live behavior with a real model is NOT VERIFIED. Phase 2 is next, after the platform decision gate below.
 
 **What was learned and measured after the audit:**
 
@@ -653,7 +655,7 @@ The "Status" column was added on 2026-11-19. Everything without a status is stil
 | O-13 | Claude Code allow and deny lists | as in FR-404 | open |
 | O-14 | Task text in telemetry | hash only; full text only in the run folder | open |
 | O-15 | Remove the tracked `.bak` files | a separate hygiene commit | **DONE** (2026-11-20): a hygiene commit untracked them; they stay on disk and are ignored by `*.bak` |
-| O-16 | `reservedOutputTokens` per profile | reasoning 32b: 6000; coder: 4096; calibrate in Phase 2 | **DECIDED provisionally (2026-11-20):** 4096 for the `fast` profile and 6144 for the `deep` profile; calibrate in Phase 2 (the models changed since the audit) |
+| O-16 | `reservedOutputTokens` per profile | reasoning 32b: 6000; coder: 4096; calibrate in Phase 2 | **DECIDED provisionally (2026-11-20):** 4096 for the `fast` profile and 6144 for the `deep` profile; calibrate in Phase 2 (the models changed since the audit). **Superseded for `deep` by Phase 1 OD-112:** `deep` and `review` use 8192, `fast` stays at 4096 (still provisional) |
 | O-17 | Criteria for promoting the skill to user level | as in FR-405 | open |
 | O-18 | New exit code 4 for unsupported stages (CLI only) | accept | open |
 

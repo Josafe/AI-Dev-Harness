@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 1: configuration registry v2
-**Status:** Draft (2026-11-20), revision 2. Not approved and not implemented. OQ-101 to OQ-106 are resolved (OD-106 to OD-111) and the profile assignment is decided (OD-112); there are no open questions.
+**Status:** Implemented (2026-11-21), revision 3. Phase 1 is merged and tagged `phase1-done`; offline verification passed (final QA: `docs/audits/2026-11-20-phase1-final-qa.md`). Live behavior with a real model is NOT VERIFIED. Revision 3 adds the validation of `ollama.healthTimeoutSec` and `ollama.url` (FR-103, AC-114) and states two existing behaviors (FR-103 `schemaVersion`, FR-104 rule 2). OQ-101 to OQ-106 are resolved (OD-106 to OD-111) and the profile assignment is decided (OD-112); there are no open questions.
 **Applies to:** AI-Dev-Harness. Baseline: commit `5ffc33f` (tag `phase0-done`).
 **Requirement ID scheme:** Phase 1 uses `FR-1nn`, `NFR-1nn`, `AC-1nn`. Phase 0 IDs are cited as "Phase 0 NFR-006" and similar (`specs/harness-phase-0-defect-corrections.md`).
 
@@ -99,7 +99,8 @@ All three profiles keep `contextWindow` 16384 and `timeoutSec` 900; `defaults` i
 
 `Get-HarnessRegistry` validates a v2 file and, if a rule fails, throws a message that starts with the fixed token `registry_invalid:` followed by the rule and the offending name. The rules:
 
-- `schemaVersion` is `2`; any other value is invalid.
+- `schemaVersion` is `2`; any other value is invalid. Only a file without the `schemaVersion` key is v1: an explicit `"schemaVersion": 1` or `null` is invalid (`registry_invalid: schemaVersion`), not v1.
+- `ollama.healthTimeoutSec`, when present, is an integer from 1 to 600 (the error token is `registry_invalid: ollama.healthTimeoutSec`). `ollama.url`, when present, is a non-blank string (`registry_invalid: ollama.url`). Absent, they take the defaults of FR-101.
 - Every profile has a non-blank string `model`.
 - `defaults.profile` and every `agents.<A>.profile` name an existing profile.
 - `timeoutSec` (in a profile or in `defaults`) is an integer from 30 to 14400.
@@ -120,7 +121,7 @@ All three profiles keep `contextWindow` 16384 and `timeoutSec` 900; `defaults` i
 **Rules, in order:**
 
 1. `-Model` together with `-Profile` is an error that starts with the token `invalid_arguments:` (OD-102).
-2. `-Model M`: the model is `M`; `modelSource` is `explicit-model`. The parameters come from the one profile whose `model` equals `M`, if exactly one does; otherwise from agent `A`'s profile, and, if no profile has that model, the warning code `unregistered_model_override` is added, in the record only and never printed (OD-109).
+2. `-Model M`: the model is `M`; `modelSource` is `explicit-model`. The parameters come from the one profile whose `model` equals `M`, if exactly one does; otherwise from agent `A`'s profile, or from `defaults.profile` when `A` has no registry entry, and, if no profile has that model, the warning code `unregistered_model_override` is added, in the record only and never printed (OD-109).
 3. `-Profile P`: `P` must exist, otherwise `registry_invalid:`; `modelSource` is `explicit-profile`.
 4. `AI_HARNESS_MODEL` set and not blank: handled like rule 2; `modelSource` is `env`.
 5. `agents.<A>.profile`: `modelSource` is `agent`.
@@ -211,7 +212,7 @@ Verifies: FR-101, FR-102, NFR-103.
 
 Verifies: FR-103, FR-108, NFR-102.
 
-One fixture per rule, each rejected by `Get-HarnessRegistry` with the token `registry_invalid:`: `schemaVersion` 3; a profile without `model`; an unknown `defaults.profile`; an unknown agent profile; `timeoutSec` 29 and 14401; a `contextWindow` not greater than `reservedOutputTokens` plus the margin; `options.num_ctx` different from `contextWindow`; `think` equal to `"maybe"`. A v1 fixture with `timeoutSec` 10 loads. A v2 fixture with an unknown key and a non-loopback URL loads and carries `unknown_key:` and `non_loopback_ollama_url` in `warnings`. `think` is `"default"` when absent and `true`, `false` and `"default"` are kept.
+One fixture per rule, each rejected by `Get-HarnessRegistry` with the token `registry_invalid:`: `schemaVersion` 3; a profile without `model`; an unknown `defaults.profile`; an unknown agent profile; `timeoutSec` 29 and 14401; a `contextWindow` not greater than `reservedOutputTokens` plus the margin; `options.num_ctx` different from `contextWindow`; `think` equal to `"maybe"`. A v1 fixture with `timeoutSec` 10 loads. A v2 fixture with an unknown key and a non-loopback URL loads and carries `unknown_key:` and `non_loopback_ollama_url` in `warnings`. `think` is `"default"` when absent and `true`, `false` and `"default"` are kept. The margin rule is checked with a non-default `defaults.safetyMarginRatio` and with a fractional product (ratio 0.1 and window 8191 give 819.1, rounded up to 820), at the exact accepted and rejected boundaries, with expected values written as literals. An explicit `"schemaVersion": 1` and `"schemaVersion": null` are rejected.
 
 ### AC-104 — Invalid configuration stops the scripts before any request
 
@@ -306,6 +307,14 @@ With the migrated v2 `.ai/config.json` (WP-1B), for `spec`, `spec-reviewer`, `sp
 
 The expected values are read from the raw JSON of `config-v1-current.json`, not from the code under test, and the check contains no model name (AC-107).
 
+### AC-114 — `ollama.healthTimeoutSec` and `ollama.url` are validated
+
+**Source:** USER
+
+Verifies: FR-103.
+
+`Get-HarnessRegistry` and the `Resolve-HarnessModel` wrapper accept a v2 file with `healthTimeoutSec` 1 and 600, and reject 0, -5, 601, `"abc"` and 30.5 with `registry_invalid: ollama.healthTimeoutSec`. A blank `ollama.url` is rejected with `registry_invalid: ollama.url`. A v1 file, and a v2 file without these fields, still load with `healthTimeoutSec` 15. With the guards of NFR-102, `review-spec.ps1` run with an invalid `healthTimeoutSec` exits 2, prints a line containing `registry_invalid: ollama.healthTimeoutSec`, makes no request and writes no telemetry line.
+
 ## Traceability Matrix
 
 This table is the inverse of the `Verifies:` lines above. The two must stay identical.
@@ -314,7 +323,7 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 |---|---|
 | FR-101 | AC-102, AC-113 |
 | FR-102 | AC-101, AC-102 |
-| FR-103 | AC-103, AC-104 |
+| FR-103 | AC-103, AC-104, AC-114 |
 | FR-104 | AC-101, AC-105, AC-106 |
 | FR-105 | AC-101, AC-106 |
 | FR-106 | AC-104, AC-105, AC-108, AC-109, AC-110 |
@@ -334,8 +343,8 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | `scripts/benchmark-models.ps1` (modified) | Remove the literal default `-Models`; build it from the registry. | FR-107 |
 | `scripts/test-all.ps1`, `scripts/test-spec-integration.ps1` (modified) | Resolve the live-suite model through the registry resolution. | FR-106 |
 | `.ai/config.json` (modified) | WP-1B only, last commit, with human approval: rewrite as v2 with the profiles `fast`, `deep` and `review` (OD-110, OD-112). | FR-101 |
-| `scripts/test-registry.ps1` (new) | WP-1A, in-process: golden table, conversion, validation, selection rules, `think` | AC-101, AC-102, AC-103, AC-105 (function part), AC-106, AC-109 (record part) |
-| `scripts/test-registry-callsites.ps1` (new) | WP-1B: child-process cases with the fake-host guards, the literal scan, the benchmark helper, the live-suite model | AC-104, AC-105, AC-107, AC-108, AC-110, AC-113 |
+| `scripts/test-registry.ps1` (new) | WP-1A, in-process: golden table, conversion, validation, selection rules, `think` | AC-101, AC-102, AC-103, AC-105 (function part), AC-106, AC-109 (record part), AC-114 |
+| `scripts/test-registry-callsites.ps1` (new) | WP-1B: child-process cases with the fake-host guards, the literal scan, the benchmark helper, the live-suite model | AC-104, AC-105, AC-106 (script part), AC-107, AC-108, AC-109 (request bodies), AC-110, AC-113, AC-114 |
 | `tests/fixtures/config-v1-current.json`, `config-v2-current.json` (new) | Frozen v1 file and its strict v2 translation (no `review` profile) | AC-101, AC-102, AC-110 |
 | `tests/fixtures/config-v1-minimal.json`, `config-v2-*.json` (new) | One per invalid rule, plus warnings and `think` cases, with synthetic model names | AC-102, AC-103, AC-106 |
 | `tests/fixtures/historical-model-names.txt` (new, WP-1B) | The three historical model names, as data | AC-107 |

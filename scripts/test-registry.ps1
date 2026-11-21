@@ -392,6 +392,40 @@ try {
         Assert-Throws "safetyMarginRatio is not a number" { Get-HarnessRegistry -ConfigPath $ratio } "registry_invalid: safetyMarginRatio"
     }
 
+    # The margin rule (FR-103): contextWindow > reservedOutputTokens + ceil(ratio x contextWindow).
+    # Expected outcomes are literals worked out by hand, not computed from the code.
+    #   ratio 0.5,  window 1000: margin 500    -> reserved 499 fits; 500 and 501 do not
+    #   ratio 0.15, window 1000: margin 150    -> reserved 849 fits; 850 does not
+    #   ratio 0.1,  window 8191: 819.1 -> 820  -> reserved 7370 fits; 7371 does not
+    #     (rounding the margin down to 819 would accept 7371)
+    $marginAccepted = @(
+        @{ File = "config-v2-margin-half-ok.json";     Reserved = 499;  Note = "ratio 0.5, window 1000" },
+        @{ File = "config-v2-margin-015-ok.json";      Reserved = 849;  Note = "ratio 0.15, window 1000" },
+        @{ File = "config-v2-margin-fraction-ok.json"; Reserved = 7370; Note = "ratio 0.1, window 8191 (margin 819.1)" }
+    )
+    foreach ($case in $marginAccepted) {
+        Test-Case "AC-103 margin accepted: $($case.Note), reserved $($case.Reserved)" {
+            $path = Join-Path $fixtures $case.File
+            Assert-Equal "loader" $case.Reserved (Get-HarnessRegistry -ConfigPath $path).profiles.alpha.reservedOutputTokens
+            Assert-Equal "wrapper" "test-model-a" (Resolve-HarnessModel -Agent "spec" -ModelWasProvided $false -Config (Get-HarnessConfig -ConfigPath $path))
+        }
+    }
+
+    $marginRejected = @(
+        @{ File = "config-v2-invalid-margin-half-500.json";     Reserved = 500;  Note = "ratio 0.5, window 1000" },
+        @{ File = "config-v2-invalid-margin-half-501.json";     Reserved = 501;  Note = "ratio 0.5, window 1000" },
+        @{ File = "config-v2-invalid-margin-015-850.json";      Reserved = 850;  Note = "ratio 0.15, window 1000" },
+        @{ File = "config-v2-invalid-margin-fraction-7371.json"; Reserved = 7371; Note = "ratio 0.1, window 8191 (margin 819.1)" }
+    )
+    foreach ($case in $marginRejected) {
+        Test-Case "AC-103 margin rejected: $($case.Note), reserved $($case.Reserved)" {
+            $path = Join-Path $fixtures $case.File
+            Assert-Equal "fixture reserved value" $case.Reserved (Get-RawJson $path).profiles.alpha.reservedOutputTokens
+            Assert-Throws "loader" { Get-HarnessRegistry -ConfigPath $path } "registry_invalid: context_margin"
+            Assert-Throws "wrapper" { Resolve-HarnessModel -Agent "spec" -ModelWasProvided $false -Config (Get-HarnessConfig -ConfigPath $path) } "registry_invalid: context_margin"
+        }
+    }
+
     Test-Case "AC-103 a v1 file is not validated (timeoutSec 10 loads)" {
         $path = Join-Path $fixtures "config-v1-timeout-10.json"
         $registry = Get-HarnessRegistry -ConfigPath $path

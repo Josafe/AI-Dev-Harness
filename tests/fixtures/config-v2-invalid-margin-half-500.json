@@ -1,0 +1,7 @@
+{
+  "schemaVersion": 2,
+  "defaults": { "profile": "alpha", "safetyMarginRatio": 0.5 },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "contextWindow": 1000, "reservedOutputTokens": 500 }
+  }
+}

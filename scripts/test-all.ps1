@@ -612,14 +612,14 @@ function Test-OllamaPrecondition {
     $url = "http://localhost:11434"
     $configPath = Join-Path $repoRoot ".ai\config.json"
     if (Test-Path -LiteralPath $configPath -PathType Leaf) {
-        # The URL comes from the normalized registry (v1 or v2); a failure to read
-        # it keeps the fallback URL above and never throws.
+        # The URL comes from the normalized registry (v1 or v2). A failure to read
+        # it is returned as the reason, not hidden behind the fallback URL.
         try {
             . (Join-Path $scriptsDirectory "lib\config.ps1")
             $registryUrl = [string](Get-HarnessRegistry -ConfigPath $configPath).ollama.url
             if (-not [string]::IsNullOrWhiteSpace($registryUrl)) { $url = $registryUrl.Trim().TrimEnd('/') }
         }
-        catch { }
+        catch { return "could not read .ai\config.json: $($_.Exception.Message)" }
     }
 
     try { $tags = Invoke-RestMethod -Uri "$url/api/tags" -Method Get -TimeoutSec 5 }

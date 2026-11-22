@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 2: shared agent execution engine
-**Status:** Draft, revision 2 (2026-11-22; revision 2 applies the changes M-1 to M-10 of `docs/audits/2026-11-22-phase2-spec-review.md`, except that the owner decisions OQ-211 to OQ-214 are recorded as open questions with a recommendation, and the nits are not applied). Not approved and not implemented. Open decisions OQ-201 to OQ-214 need the human owner before the work packages they block can start (see "Open Questions").
+**Status:** Draft, revision 2 (2026-11-22; revision 2 applies the changes M-1 to M-10 of `docs/audits/2026-11-22-phase2-spec-review.md`, except that the nits are not applied). **Approved for implementation by the human owner on 2026-11-22 (revision 3): all recommendations of OQ-201 to OQ-214 accepted as written** (see "Open Questions" and D-209). Not yet implemented; implementation proceeds work package by package with review and approval after each.
 **Applies to:** AI-Dev-Harness. Baseline: tag `phase1-hardened` (commit `ba33bb4`).
 **Requirement ID scheme:** Phase 2 uses `FR-2nn`, `NFR-2nn`, `AC-2nn`. FR-201 to FR-207 and AC-201 to AC-205 keep the numbers of the roadmap's Phase 2 section (`docs/roadmap/modernization-roadmap.md`), narrowed here; FR-208 onward are added. Phase 0 and Phase 1 IDs are cited as "Phase 1 AC-109" and similar.
 **Labels:** every requirement has one `Source:` line (USER, PROJECT, FACT or ASSUMPTION, the only values the validator accepts). A choice made by the spec author, not by the owner, is written as "RECOMMENDATION" in the text and listed in "Open Questions".
@@ -628,10 +628,11 @@ One work package per unattended Claude Code session, one or a few commits each. 
 | D-206 | Prompts byte-identical, with a stated line-ending rule. | FR-203 |
 | D-207 | CSV rule: old header present -> v2 rows go to `model-calls.v2.csv`, old file unchanged. | FR-216, AC-204 |
 | D-208 | The three scripts keep parameters, exit codes, console markers and output files; `Invoke-HarnessGenerate` stays as a deprecated wrapper; `ModelAgent` live entries are unchanged. | FR-202, NFR-205 |
+| D-209 | The owner accepts all recommendations of OQ-201 to OQ-214 as written (2026-11-22): `budgetMode` default `warn`; 2 attempts and 5 s; warm-up off; builders emit CRLF template separators (OQ-211); finer category names with the mapping table (OQ-212); the author-chosen specifics of OQ-213; `failure.message` for display only (OQ-214). | OQ-201 to OQ-214 |
 
 ## Open Questions
 
-Each has a RECOMMENDATION. Work packages that a question blocks are noted.
+Each has a RECOMMENDATION. Work packages that a question blocks are noted. **Decision (owner, 2026-11-22, given in the working session): every RECOMMENDATION below is accepted as written (D-209).** The text is kept as the record of what was accepted.
 
 - **OQ-201 (blocks WP-2B1 and WP-2D2): budget default and the shipped mode.** With the shipped profiles, enforcement would refuse the reviewer and reviser (Context table). RECOMMENDATION: implement enforcement, with default `warn` when the key is absent and no `budgetMode` key in the shipped file, and `charsPerToken` 3.5 (a v2 file without the key must keep working, Phase 1 NFR-103); calibrate in WP-2E, then decide between flipping to `enforce` with a measured ratio and raising the `deep` and `review` context windows (a hardware decision: Phase 1 OD-111 kept 16384 on 12 GiB of VRAM). This deviates from the roadmap's [M] immediate enforcement.
 - **OQ-202: log failures before the model is reached.** XR-05 asks for records with `model_called` false; Phase 0 OD-04 said telemetry only for requests sent. RECOMMENDATION: yes, as FR-215 and FR-216, with the AC-218 test changes.

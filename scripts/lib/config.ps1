@@ -161,6 +161,37 @@ function Assert-HarnessRegistryV2 {
         throw "registry_invalid: ollama.url (ollama.url must be a non-blank string)"
     }
 
+    # Phase 2 engine fields (FR-217). All optional; the defaults are applied in
+    # ConvertTo-HarnessRegistry.
+    $maxAttempts = Get-ConfigValue $ollama "maxAttempts" $null
+    if ($null -ne $maxAttempts -and
+        (-not (Test-HarnessInteger $maxAttempts) -or $maxAttempts -lt 1 -or $maxAttempts -gt 5)) {
+        throw "registry_invalid: ollama.maxAttempts (ollama.maxAttempts must be an integer from 1 to 5)"
+    }
+
+    $retryBackoff = Get-ConfigValue $ollama "retryBackoffSec" $null
+    if ($null -ne $retryBackoff -and
+        (-not (Test-HarnessInteger $retryBackoff) -or $retryBackoff -lt 0 -or $retryBackoff -gt 60)) {
+        throw "registry_invalid: ollama.retryBackoffSec (ollama.retryBackoffSec must be an integer from 0 to 60)"
+    }
+
+    $warmup = Get-ConfigValue $ollama "warmup" $null
+    if ($null -ne $warmup -and $warmup -isnot [bool]) {
+        throw "registry_invalid: ollama.warmup (ollama.warmup must be true or false)"
+    }
+
+    $charsPerToken = Get-ConfigValue $defaults "charsPerToken" $null
+    if ($null -ne $charsPerToken -and
+        (-not (Test-HarnessNumber $charsPerToken) -or [decimal]$charsPerToken -le 0 -or [decimal]$charsPerToken -gt 10)) {
+        throw "registry_invalid: defaults.charsPerToken (defaults.charsPerToken must be a number greater than 0 and at most 10)"
+    }
+
+    $budgetMode = Get-ConfigValue $defaults "budgetMode" $null
+    if ($null -ne $budgetMode -and
+        -not (($budgetMode -is [string]) -and (($budgetMode -ceq "enforce") -or ($budgetMode -ceq "warn")))) {
+        throw "registry_invalid: defaults.budgetMode (defaults.budgetMode must be `"enforce`" or `"warn`")"
+    }
+
     $defaultTimeout = Get-ConfigValue $defaults "timeoutSec" $null
     if ($null -ne $defaultTimeout -and
         (-not (Test-HarnessInteger $defaultTimeout) -or $defaultTimeout -lt 30 -or $defaultTimeout -gt 14400)) {
@@ -265,8 +296,8 @@ function Assert-HarnessRegistryV2 {
     }
 
     Add-HarnessUnknownKeys -Object $Config -Known @("schemaVersion", "ollama", "defaults", "profiles", "agents") -Path "" -Warnings $Warnings
-    Add-HarnessUnknownKeys -Object $ollama -Known @("url", "healthTimeoutSec") -Path "ollama" -Warnings $Warnings
-    Add-HarnessUnknownKeys -Object $defaults -Known @("profile", "options", "timeoutSec", "safetyMarginRatio", "stripThinking") -Path "defaults" -Warnings $Warnings
+    Add-HarnessUnknownKeys -Object $ollama -Known @("url", "healthTimeoutSec", "maxAttempts", "retryBackoffSec", "warmup") -Path "ollama" -Warnings $Warnings
+    Add-HarnessUnknownKeys -Object $defaults -Known @("profile", "options", "timeoutSec", "safetyMarginRatio", "stripThinking", "charsPerToken", "budgetMode") -Path "defaults" -Warnings $Warnings
 }
 
 # Config object (v1 or v2, as returned by Get-HarnessConfig; $null counts as an
@@ -324,6 +355,9 @@ function ConvertTo-HarnessRegistry {
         ollama        = [pscustomobject]@{
             url              = Get-ConfigValue $ollama "url" "http://localhost:11434"
             healthTimeoutSec = Get-ConfigValue $ollama "healthTimeoutSec" 15
+            maxAttempts      = Get-ConfigValue $ollama "maxAttempts" 2
+            retryBackoffSec  = Get-ConfigValue $ollama "retryBackoffSec" 5
+            warmup           = Get-ConfigValue $ollama "warmup" $false
         }
         defaults      = [pscustomobject]@{
             profile           = Get-ConfigValue $defaults "profile" $null
@@ -331,6 +365,8 @@ function ConvertTo-HarnessRegistry {
             timeoutSec        = Get-ConfigValue $defaults "timeoutSec" 600
             safetyMarginRatio = Get-ConfigValue $defaults "safetyMarginRatio" 0.10
             stripThinking     = Get-ConfigValue $defaults "stripThinking" $true
+            charsPerToken     = Get-ConfigValue $defaults "charsPerToken" 3.5
+            budgetMode        = Get-ConfigValue $defaults "budgetMode" "warn"
         }
         profiles      = [pscustomobject]$profiles
         agents        = [pscustomobject]$agents

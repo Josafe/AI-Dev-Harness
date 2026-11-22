@@ -1,0 +1,9 @@
+{
+  "schemaVersion": 2,
+  "ollama": { "healthTimeoutSec": 15, "maxAttempts": 3, "retryBackoffSec": 7, "warmup": true },
+  "defaults": { "charsPerToken": 4.5, "budgetMode": "enforce" },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "contextWindow": 10000, "reservedOutputTokens": 1000 }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

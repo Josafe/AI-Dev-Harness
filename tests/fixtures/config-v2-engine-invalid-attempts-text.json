@@ -1,0 +1,8 @@
+{
+  "schemaVersion": 2,
+  "ollama": { "healthTimeoutSec": 15, "maxAttempts": "2" },
+  "profiles": {
+    "alpha": { "model": "test-model-a", "contextWindow": 10000, "reservedOutputTokens": 1000 }
+  },
+  "agents": { "spec": { "profile": "alpha" } }
+}

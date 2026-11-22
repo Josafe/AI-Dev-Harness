@@ -1,0 +1,5 @@
+# Fixture agent contract
+@"
+text that looks like a here-string body
+"@
+Last line without a newline

@@ -1,0 +1,6 @@
+FILE: src/a.ps1
+Write-Host "$env:USERNAME"
+
+FILE: README.md
+
+café `` {0}

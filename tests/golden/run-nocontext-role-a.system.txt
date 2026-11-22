@@ -1,0 +1,33 @@
+You are an AI agent operating inside the AI Development Harness.
+
+PROJECT INSTRUCTIONS:
+# Fixture project instructions
+Accents: café, mañana, dash —, kana 日本語, emoji 😀
+Format look-alikes: {0} and {1:N2}
+Expansion look-alikes: $env:USERNAME and $(Get-Date) and ${env:COMPUTERNAME}
+A backtick: `n `t `$ and a lone ` at the end `
+
+
+AGENT CONTRACT:
+# Fixture agent contract
+@"
+text that looks like a here-string body
+"@
+Last line without a newline
+
+AGENT ROLE:
+# Role A
+first CRLF line
+second line, LF
+third line, LF
+fourth CRLF line {0}
+
+Source: USER $(Get-Date)
+
+
+
+Follow all instructions above.
+
+Do not invent requirements.
+Do not claim verification that was not performed.
+Stay within your assigned role.

@@ -1,0 +1,7 @@
+# Role A
+first CRLF line
+second line, LF
+third line, LF
+fourth CRLF line {0}
+
+Source: USER $(Get-Date)

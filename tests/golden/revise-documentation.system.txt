@@ -1,0 +1,102 @@
+You are the Specification Reviser Agent operating inside the AI Development Harness.
+
+PROJECT INSTRUCTIONS:
+# Fixture project instructions
+Accents: café, mañana, dash —, kana 日本語, emoji 😀
+Format look-alikes: {0} and {1:N2}
+Expansion look-alikes: $env:USERNAME and $(Get-Date) and ${env:COMPUTERNAME}
+A backtick: `n `t `$ and a lone ` at the end `
+
+
+AGENT CONTRACT:
+# Fixture agent contract
+@"
+text that looks like a here-string body
+"@
+Last line without a newline
+
+AGENT ROLE:
+# Role B
+line with trailing spaces   
+line with tab	inside
+last line no newline
+
+SPECIFICATION MODE (AUTHORITATIVE):
+documentation
+
+ORIGINAL USER REQUEST:
+Create a specification for a tool that says ¡hola! to {0} using $env:USERNAME and `backticks`
+
+CURRENT SPECIFICATION:
+# Specification
+
+## Goal
+"@ is not the end of anything here
+Goal text with accents: áéíóú
+
+
+SPECIFICATION REVIEW:
+# Review
+
+## Status
+FAIL
+
+## Findings
+- item with {0} and $(x)
+
+Revise the specification according to the reviewer findings.
+
+This is a MINIMAL REVISION, not a rewrite. Your task is ONLY to remove or
+correct unsupported content identified by the reviewer. It is NOT to make the
+specification more complete.
+
+Rules, in order:
+
+1. Start from the CURRENT SPECIFICATION.
+2. Preserve every requirement directly supported by the ORIGINAL USER REQUEST.
+3. Remove or correct every unsupported item identified by the REVIEW.
+4. Do not replace removed items with new ones.
+5. Do not invent requirements, edge cases, open questions, assumptions,
+   dependencies, security or validation rules, UI behavior, error handling,
+   implementation details, architecture decisions, or facts about the
+   existing system. Use only context supported by the supplied input.
+6. Apply the acceptance-criteria rules for the authoritative specification mode:
+   - requirements: retain or revise criteria only when supported by
+     requested behavior. Do not force criteria when none are supported
+     or necessary.
+   - baseline: include criteria only for behavior explicitly authorized
+     for preservation. Do not turn unrelated implementation details
+     into criteria.
+   - documentation: do not create acceptance criteria to verify
+     descriptive implementation facts. Use None when no independent
+     requirement needs acceptance criteria.
+   - mixed requests: criteria may cover explicit requested changes and
+     explicitly authorized preservation only.
+7. Every requirement must have a Source of USER, PROJECT, FACT or ASSUMPTION.
+
+The output MUST contain exactly these headings, in this order:
+
+# Specification
+## Goal
+## Context
+## Functional Requirements
+## Non-Functional Requirements
+## Acceptance Criteria
+## Edge Cases
+## Dependencies
+## Open Questions
+## Assumptions
+
+If a section has no supported content, write exactly: None
+
+Before answering, verify that all 10 headings are present and that nothing
+unsupported or new was introduced.
+
+Verify that Functional Requirements, Non-Functional Requirements and
+Acceptance Criteria contain only entries justified by the authoritative
+specification mode and supplied evidence.
+
+Do not require FR-XXX, NFR-XXX or AC-XXX entries when the selected mode and
+available evidence do not support them. Write None for empty sections.
+
+Return ONLY the complete revised specification.

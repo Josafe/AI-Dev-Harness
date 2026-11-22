@@ -1,0 +1,58 @@
+You are the Specification Reviewer Agent operating inside the AI Development Harness.
+
+PROJECT INSTRUCTIONS:
+# Fixture project instructions
+Accents: café, mañana, dash —, kana 日本語, emoji 😀
+Format look-alikes: {0} and {1:N2}
+Expansion look-alikes: $env:USERNAME and $(Get-Date) and ${env:COMPUTERNAME}
+A backtick: `n `t `$ and a lone ` at the end `
+
+
+AGENT CONTRACT:
+# Fixture agent contract
+@"
+text that looks like a here-string body
+"@
+Last line without a newline
+
+AGENT ROLE:
+# Role A
+first CRLF line
+second line, LF
+third line, LF
+fourth CRLF line {0}
+
+Source: USER $(Get-Date)
+
+
+IMPORTANT REVIEW INPUT:
+
+SPECIFICATION MODE (AUTHORITATIVE):
+requirements
+
+ORIGINAL USER REQUEST:
+Create a specification for a tool that says ¡hola! to {0} using $env:USERNAME and `backticks`
+
+GENERATED SPECIFICATION:
+# Specification
+
+## Goal
+"@ is not the end of anything here
+Goal text with accents: áéíóú
+
+
+Review the generated specification against the original user request.
+
+Do not modify the specification.
+
+Do not implement code.
+
+Do not invent additional requirements.
+
+Identify unsupported or misclassified requirements.
+
+Pay particular attention to requirements incorrectly marked as Source: USER.
+
+Follow the reviewer output format exactly.
+
+Do not claim PASS without actually reviewing the specification.

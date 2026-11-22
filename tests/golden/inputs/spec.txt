@@ -1,0 +1,5 @@
+# Specification
+
+## Goal
+"@ is not the end of anything here
+Goal text with accents: áéíóú

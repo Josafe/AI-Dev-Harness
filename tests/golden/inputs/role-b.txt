@@ -1,0 +1,4 @@
+# Role B
+line with trailing spaces   
+line with tab	inside
+last line no newline

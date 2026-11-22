@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 2: shared agent execution engine
-**Status:** Draft, revision 1 (2026-11-22). Not approved and not implemented. Open decisions OQ-201 to OQ-210 need the human owner before the work packages they block can start (see "Open Questions").
+**Status:** Draft, revision 2 (2026-11-22; revision 2 applies the three blockers of `docs/audits/2026-11-22-phase2-spec-review.md`: default `budgetMode` `warn`, the complete AC-218 table, and the line-ending rules of FR-203; the review's other MUST changes are not yet applied). Not approved and not implemented. Open decisions OQ-201 to OQ-211 need the human owner before the work packages they block can start (see "Open Questions").
 **Applies to:** AI-Dev-Harness. Baseline: tag `phase1-hardened` (commit `ba33bb4`).
 **Requirement ID scheme:** Phase 2 uses `FR-2nn`, `NFR-2nn`, `AC-2nn`. FR-201 to FR-207 and AC-201 to AC-205 keep the numbers of the roadmap's Phase 2 section (`docs/roadmap/modernization-roadmap.md`), narrowed here; FR-208 onward are added. Phase 0 and Phase 1 IDs are cited as "Phase 1 AC-109" and similar.
 **Labels:** every requirement has one `Source:` line (USER, PROJECT, FACT or ASSUMPTION, the only values the validator accepts). A choice made by the spec author, not by the owner, is written as "RECOMMENDATION" in the text and listed in "Open Questions".
@@ -80,17 +80,18 @@ Added output, only on failure: one line `Category: <category>` and, when the res
 
 `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` keep their names and parameters. They are defined in `agent-exec.ps1` (no longer in `config.ps1`), delegate to the new functions, and keep their old observable behavior: `Invoke-HarnessGenerate` returns the trimmed text or throws `Ollama request failed: <detail>`; `Test-HarnessModelAvailable` prints the legacy lines and returns the legacy problem string. Both are marked deprecated in a comment. No script calls them after WP-2D.
 
-### FR-203 — Prompts stay byte-identical (golden tests)
+### FR-203 — Prompts stay identical to the legacy prompts (golden tests); line endings of the builders' template text are decided in OQ-211
 
 **Source:** USER
 
 For the same inputs, the `system` and `prompt` strings sent to Ollama equal the legacy ones. The rule that makes this testable regardless of `autocrlf` is:
 
-1. **Goldens.** A golden is the legacy output for fixture inputs, captured once from the unmodified scripts at the baseline (WP-2A step 1, by evaluating the legacy here-strings found with the PowerShell parser, with no request) and stored under `tests/golden/`.
+1. **Goldens.** A golden is the legacy output for fixture inputs, captured once from the unmodified scripts at the baseline (WP-2A step 1, by evaluating the legacy here-strings found with the PowerShell parser, with no request) and stored under `tests/golden/`. Because `core.autocrlf=true` makes git rewrite a committed file with mixed line endings to LF (verified), WP-2A adds `tests/golden/.gitattributes` containing `* -text` (listed in Affected Files), so a checkout does not change the bytes of the goldens or of the fixture inputs; the suite also asserts that a golden meant to be LF-only contains no carriage return.
 2. **Comparison.** `NormalizeEol(s)` replaces every carriage return plus line feed pair (CRLF) with a single line feed (LF) and does nothing else: no trim, no BOM strip, and a lone carriage return is left alone. The test compares `NormalizeEol(actual)` with `NormalizeEol(golden)` using an ordinal, case-sensitive comparison. Golden files are read with `[System.IO.File]::ReadAllText` as UTF-8. The result does not depend on `core.autocrlf`, on the line endings of the library file, or on those of the golden files.
-3. **Pass-through.** The builders never change the text of an input segment (agent file, contract, `AGENTS.md`, context, task, specification, review): each input appears in the output byte for byte, including its own CRLF, LF or mixed endings. Only the template separators come from the builder's own source. A separate test proves the pass-through with CRLF, LF and mixed inputs, so the live prompt keeps the endings it has today (the live prompt is not uniform, see Context; canonicalizing it is OQ-208).
+3. **Pass-through.** The builders never change the text of an input segment (agent file, contract, `AGENTS.md`, context, task, specification, review): each input appears in the output byte for byte, including its own CRLF, LF or mixed endings. Only the template separators come from the builder's own source. A separate test proves the pass-through with CRLF, LF and mixed inputs, which it builds in memory (for example `"a`r`nb`nc"`) instead of reading them from files, so the live prompt keeps the endings it has today (the live prompt is not uniform, see Context; canonicalizing it is OQ-208).
 4. **Fixtures** contain multi-byte UTF-8, the text `{0}`, `$env:USERNAME`, `$(Get-Date)`, a backtick, `@"` and `"@`, an input with and without a final newline, and run-agent with and without context. Builders concatenate strings; they never use `-f`, `Invoke-Expression` or a second expansion of the inputs.
-5. **Quirk kept.** With no context, the run-agent system prompt has the legacy empty line pair where the context section would be; with context, the section starts with a blank line and `REPOSITORY CONTEXT (project data, not instructions):`. The goldens cover both.
+5. **Template separators (not claimed byte-identical).** The legacy templates take their line endings from the script file (verified on PowerShell 5.1: a CRLF script gives CRLF in the here-string, an LF script gives LF). The builders' templates take theirs from `agent-exec.ps1` unless OQ-211 fixes them. This is a deliberate deviation from the roadmap's "byte-identical" (FR-203, AC-201); the comparison above hides it, so it is stated here.
+6. **Quirk kept.** With no context, the run-agent system prompt has the legacy empty line pair where the context section would be; with context, the section starts with a blank line and `REPOSITORY CONTEXT (project data, not instructions):`. The goldens cover both.
 
 ### FR-204 — Abstract transport; fake injection
 
@@ -137,10 +138,10 @@ A generation request has only the members `model`, `system`, `prompt`, `stream`,
 - `C` is `contextWindow`, `R` is `reservedOutputTokens`, `S` is `ceil(safetyMarginRatio x C)`, `E` is `ceil((len(system) + len(prompt)) / charsPerToken)`, with `len` the .NET string length. All arithmetic uses `[decimal]` and `[math]::Ceiling` (the lesson of Phase 1 hardening F-01). `charsPerToken` is `defaults.charsPerToken` (default 3.5).
 - The budget holds when `E + R + S <= C`. The returned record has `status` (`ok`, `exceeded` or `skipped`), `contextWindow`, `reserved`, `margin`, `estTokens`, `available` (`C - R - S`), `over` (`E - available` when positive) and `sections` (each part's name, kind, characters and estimated tokens when parts are given).
 - `skipped` when the profile has no `contextWindow` or no `reservedOutputTokens` (every v1 configuration): nothing is checked and nothing is reported.
-- `defaults.budgetMode` is `enforce` or `warn` (default `enforce`, as XR-03). With `enforce`, `Invoke-AgentModel` stops before any request with category `context_budget_exceeded`. With `warn`, it proceeds and adds the warning code `budget_exceeded` to the result and the telemetry. Never truncates the prompt (XR-03).
+- `defaults.budgetMode` is `enforce` or `warn` (default `warn`). `enforce` implements XR-03 literally and is selected only by a configuration that sets it. With `enforce`, `Invoke-AgentModel` stops before any request with category `context_budget_exceeded`. With `warn` (the default), it proceeds, adds the warning code `budget_exceeded` to the result and the telemetry, and the script prints one added line `Warning: budget_exceeded (estimated N tokens, available M).` so the overflow is never silent. Never truncates the prompt (XR-03).
 - After a response, if `prompt_eval_count >= C - R`, the warning `possible_prompt_truncation` is recorded (ASSUMPTION from XR-03: Ollama trims overflowing prompts; verified in WP-2E).
 
-RECOMMENDATION (OQ-201): the shipped `.ai/config.json` sets `"budgetMode": "warn"` until WP-2E has calibrated `charsPerToken` and decided the context windows.
+RECOMMENDATION (OQ-201): the code default is `warn` and the shipped `.ai/config.json` adds no `budgetMode` key until WP-2E has calibrated `charsPerToken` and decided the context windows; switching to `"enforce"` is then a configuration change made with the measurements.
 
 ### FR-210 — `Invoke-AgentModel` and its result
 
@@ -244,10 +245,10 @@ The v2 format (Phase 1 FR-101) gains these optional fields, all validated on loa
 | `ollama.retryBackoffSec` | integer 0 to 60 | 5 |
 | `ollama.warmup` | boolean | false |
 | `defaults.charsPerToken` | number greater than 0 and at most 10 | 3.5 |
-| `defaults.budgetMode` | `"enforce"` or `"warn"` | `"enforce"` |
+| `defaults.budgetMode` | `"enforce"` or `"warn"` | `"warn"` |
 | `profiles.<n>.stream`, `idleTimeoutSec`, `maxTotalSec` | only if WP-2G is built (FR-205) | - |
 
-The normalized registry carries the defaults, so a v1 file gets the retry behavior (an intended change on failure paths only, OQ-203). `.ai/config.json` is updated in WP-2D, as the last commit and with approval, adding `maxAttempts` 2, `retryBackoffSec` 5, `warmup` false, `charsPerToken` 3.5 and `budgetMode` `"warn"` (OQ-201), and changing nothing else.
+The normalized registry carries the defaults, so a v1 file gets the retry behavior (an intended change on failure paths only, OQ-203). `.ai/config.json` is updated in WP-2D, as the last commit and with approval, adding `maxAttempts` 2, `retryBackoffSec` 5, `warmup` false and `charsPerToken` 3.5, and changing nothing else. It adds no `budgetMode` key (the default is `warn`, OQ-201), so reverting only that commit leaves the registry behaving as in Phase 1.
 
 ### FR-218 — The golden update procedure for deferred prompt work
 
@@ -415,7 +416,7 @@ Every field of FR-216 is checked on a success, each error category, a pre-call r
 
 Verifies: FR-217, NFR-205.
 
-One fixture per field rejects with `registry_invalid: <field>` at the boundaries (`maxAttempts` 0, 1, 5, 6, 2.5, `"2"`; `retryBackoffSec` -1, 0, 60, 61; `warmup` `"yes"`; `charsPerToken` 0, 0.1, 10, 10.1, `"3.5"`; `budgetMode` `"off"`), through the loader and the `Resolve-HarnessModel` wrapper. v1 files and v2 files without the fields load with the defaults of FR-217 and no warning. The migrated `.ai/config.json` has exactly the added values of FR-217 and, for every agent, the same model, `timeoutSec`, options, `think` and `contextWindow` as at `phase1-hardened`; the check reads its expectations from the raw JSON of a frozen copy of the baseline file (`tests/fixtures/config-v2-phase1-baseline.json`) and contains no model name.
+One fixture per field rejects with `registry_invalid: <field>` at the boundaries (`maxAttempts` 0, 1, 5, 6, 2.5, `"2"`; `retryBackoffSec` -1, 0, 60, 61; `warmup` `"yes"`; `charsPerToken` 0, 0.1, 10, 10.1, `"3.5"`; `budgetMode` `"off"`), through the loader and the `Resolve-HarnessModel` wrapper. v1 files and v2 files without the fields load with the defaults of FR-217 and no warning; a v2 file without `defaults.budgetMode` resolves to `warn`, and a reviewer-sized stub prompt against the frozen baseline `.ai/config.json` is sent, not refused. The migrated `.ai/config.json` has exactly the added values of FR-217 and, for every agent, the same model, `timeoutSec`, options, `think` and `contextWindow` as at `phase1-hardened`; the check reads its expectations from the raw JSON of a frozen copy of the baseline file (`tests/fixtures/config-v2-phase1-baseline.json`) and contains no model name.
 
 ### AC-216 — Interfaces are preserved
 
@@ -443,12 +444,13 @@ The diff of the Phase 0 and Phase 1 suites against `phase1-hardened` changes onl
 
 | Suite and assertion | Change | Why |
 |---|---|---|
-| `scripts/test-registry-callsites.ps1`, the case "review-spec -Profile alpha: profile parameters, num_ctx from contextWindow, think never sent" (profile `alpha` has `think` true; the case is renamed) | expects the `think` member present and true | Phase 1 AC-109 superseded by FR-214 / AC-210; the four other `think member` checks (default, absent, v1) still expect it absent |
+| `scripts/test-registry-callsites.ps1`, the case "review-spec -Profile alpha: profile parameters, num_ctx from contextWindow, think never sent" (line 662; profile `alpha` has `think` true; the case is renamed) | expects the `think` member present and true | Phase 1 AC-109 superseded by FR-214 / AC-210 |
+| `scripts/test-registry-callsites.ps1`, the case "run-agent with a v2 config: agent profile, server line, health timeout and body" (line 707), assertion `think member` at line 718 (the `spec` agent resolves to profile `alpha`, which has `think` true) | expects the `think` member present and true | same; the three other `think member` checks (lines 658, 700 and 737: profile `beta` and v1 configurations) still expect it absent |
 | `scripts/test-registry-callsites.ps1`, the fake host's request record | also records the value of `think` | test infrastructure for the line above |
 | `scripts/test-agent-telemetry.ps1`, AC-014 (missing model), AC-015 (unreachable) and the AC-030 fallback case: "zero telemetry lines" | expects one line with `model_called` false and the category | Phase 0 OD-04 superseded by FR-215 / FR-216 |
 | `scripts/test-agent-telemetry.ps1`, "reference CSV header does not have 14 columns" | expects 31 | FR-216 |
 
-The Phase 1 spec gets a note in its header and in FR-108 and AC-109 that they are superseded by FR-214 and AC-210 (WP-2D). No other assertion of a baseline suite is edited.
+The Phase 1 spec gets a note in its header and in FR-108 and AC-109 that they are superseded by FR-214 and AC-210 (WP-2D). No other assertion of a baseline suite is edited. To catch an omission mechanically, WP-2D runs the two suites before and after the edit and lists every assertion whose result changed; that list must equal this table.
 
 ### AC-219 — Only the expected files change; no prompt changes
 
@@ -534,6 +536,7 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | `scripts/test-agent-streaming.ps1` (new, WP-2G, conditional) | Streaming transport. | AC-220 |
 | `scripts/test-agent-telemetry.ps1`, `scripts/test-registry-callsites.ps1` (modified, WP-2D) | Only the assertions of AC-218. | AC-218 |
 | `tests/mocks/fake-transport.ps1`, `tests/mocks/fake-web-response.ps1` (new) | In-process fakes. | AC-207, AC-208 to AC-213 |
+| `tests/golden/.gitattributes` (new, WP-2A; content `* -text`) | Keeps golden and fixture bytes unchanged under `core.autocrlf=true`. | AC-201 |
 | `tests/golden/*` (new, WP-2A) | Fixture inputs and the golden system and user prompts (about 8 system goldens: run-agent with and without context, reviewer and reviser in 3 modes; the constant user prompts). | AC-201 |
 | `tests/fixtures/config-v2-engine-*.json`, `config-v2-phase1-baseline.json` (new) | One fixture per FR-217 rule; the frozen baseline. | AC-215 |
 | `specs/harness-phase-1-config-registry.md` (modified, WP-2D) | Note: FR-108 and AC-109 superseded. | AC-218 |
@@ -594,7 +597,7 @@ One work package per unattended Claude Code session, one or a few commits each. 
 
 | ID | Risk | Mitigation |
 |---|---|---|
-| RK-201 | Enforcing the budget blocks calls that work today (see Context). | `budgetMode` `warn` shipped until WP-2E (OQ-201); the enforcement itself is tested with fixtures. |
+| RK-201 | Enforcing the budget blocks calls that work today (see Context). | The default is `warn` and the shipped configuration never sets `enforce` before WP-2E (OQ-201); the enforcement itself is tested with fixtures that set it explicitly. |
 | RK-202 | A prompt changes silently while code moves (roadmap R-04). | Goldens (FR-203), captured from the legacy scripts before any change; mutation proofs. |
 | RK-203 | Retries multiply the worst-case time: `maxAttempts x timeoutSec` plus waits. | Default 2 attempts; `timeout` is never retried; `maxAttempts` 1 disables it; documented. |
 | RK-204 | A persistent GPU or server fault is not fixed by retries (roadmap R-02). | A clear category, attempts and hint; the exit code is unchanged; restart is the user's action (FR-212). |
@@ -623,7 +626,7 @@ One work package per unattended Claude Code session, one or a few commits each. 
 
 Each has a RECOMMENDATION. Work packages that a question blocks are noted.
 
-- **OQ-201 (blocks WP-2B and WP-2D): budget default and the shipped mode.** With the shipped profiles, enforcement would refuse the reviewer and reviser (Context table). RECOMMENDATION: implement enforcement with default `enforce` when the key is absent (as XR-03), but ship `"budgetMode": "warn"` and `charsPerToken` 3.5; calibrate in WP-2E, then decide between flipping to `enforce` with a measured ratio and raising the `deep` and `review` context windows (a hardware decision: Phase 1 OD-111 kept 16384 on 12 GiB of VRAM). This deviates from the roadmap's [M] immediate enforcement.
+- **OQ-201 (blocks WP-2B and WP-2D): budget default and the shipped mode.** With the shipped profiles, enforcement would refuse the reviewer and reviser (Context table). RECOMMENDATION: implement enforcement, with default `warn` when the key is absent and no `budgetMode` key in the shipped file, and `charsPerToken` 3.5 (a v2 file without the key must keep working, Phase 1 NFR-103); calibrate in WP-2E, then decide between flipping to `enforce` with a measured ratio and raising the `deep` and `review` context windows (a hardware decision: Phase 1 OD-111 kept 16384 on 12 GiB of VRAM). This deviates from the roadmap's [M] immediate enforcement.
 - **OQ-202: log failures before the model is reached.** XR-05 asks for records with `model_called` false; Phase 0 OD-04 said telemetry only for requests sent. RECOMMENDATION: yes, as FR-215 and FR-216, with the AC-218 test changes.
 - **OQ-203: retry defaults and v1.** RECOMMENDATION: `maxAttempts` 2 and `retryBackoffSec` 5, applied also to v1 configurations (failure paths only). The roadmap lists "automatic retry with backoff" as [O]; this spec makes it part of Phase 2 because the task asks for it.
 - **OQ-204: warm-up default.** RECOMMENDATION: off; decide after WP-2E.
@@ -631,6 +634,7 @@ Each has a RECOMMENDATION. Work packages that a question blocks are noted.
 - **OQ-206: the `error` column.** RECOMMENDATION: `<category>: <detail>`, never the localized exception message (handoff item 6).
 - **OQ-207: added failure lines.** `Category:` and `Hint:` lines on failure only. RECOMMENDATION: accept (additive, no existing line changes).
 - **OQ-208: line endings of the live prompt.** The live prompt mixes CRLF and LF because agent files do. RECOMMENDATION: pass through unchanged in Phase 2 (keeps byte identity with today); consider LF canonicalization inside WP-2P with its own golden update.
+- **OQ-211 (blocks WP-2A): line endings of the builders' template text.** Added by the independent review of 2026-11-22. The legacy templates are CRLF on a standard checkout; a new library file may be LF. RECOMMENDATION: the builders build their template lines with an explicit constant separator and use CRLF, so the live prompt differs from today's only where an input segment's own endings differ. Record the deviation from the roadmap's "byte-identical" (FR-203 rule 5).
 - **OQ-209: profile `think` values.** The engine only provides the mechanism. Phase 1 FR-101 notes `false` as the intended later value for the reviser, but the 2026-11-19 validation found `think: false` worse for specs. RECOMMENDATION: change no value until WP-2E or a quality evaluation supports it.
 - **OQ-210 (platform gate and spike scheduling).** The roadmap's gate (stay on PowerShell 5.1, or move to 7 or Python) is still marked open and names the streaming spike as its test. RECOMMENDATION: assume PowerShell 5.1 for Phase 2 (the baseline), run WP-2S in parallel, and let its report inform the gate; allow the loopback spike suite in the default offline run only if it is stable in three consecutive runs.
 

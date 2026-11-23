@@ -753,6 +753,25 @@ try {
         Assert-Equal "telemetry context_window (v1: skipped budget)" "" $run.Telemetry[0].context_window
     }
 
+    Test-Case "run-agent success adds no console line (no Category, Hint, Retrying or Warning), and creates a missing output directory" {
+        $nested = Join-Path $casesDirectory "nested-output\sub\result.md"
+        if (Test-Path -LiteralPath (Join-Path $casesDirectory "nested-output")) { Remove-Item -LiteralPath (Join-Path $casesDirectory "nested-output") -Recurse -Force }
+        $run = Invoke-Case -Name "success-quiet" -ConfigText (New-V2Config) -Arguments @{ OutputFile = $nested } -TagsSteps $tagsAlpha -GenerateSteps @((& $okReply "Quiet answer."))
+        Assert-Guards $run
+        Assert-Equal "exit code" 0 $run.ExitCode
+        foreach ($text in @("Category:", "Hint:", "Retrying", "Warning:", "=== OLLAMA ERROR ===")) { Assert-NoLine $run $text }
+        Assert-ExactLine $run "Output : $nested"
+        Assert-Equal "output file" "Quiet answer." ([System.IO.File]::ReadAllText($nested))
+    }
+
+    Test-Case "run-agent trims -Model before the availability check and the request, as before" {
+        $run = Invoke-Case -Name "model-trim" -ConfigText (New-V2Config) -Arguments @{ Model = "  test-model-alpha  " } -TagsSteps $tagsAlpha -GenerateSteps @((& $okReply "ok"))
+        Assert-Guards $run
+        Assert-Equal "exit code" 0 $run.ExitCode
+        Assert-ExactLine $run "Model : test-model-alpha"
+        Assert-Equal "model in the request" "test-model-alpha" (@(Get-Generations $run)[0].model)
+        Assert-Equal "model in the record" "test-model-alpha" $run.Telemetry[0].model
+    }
     Test-Case "run-agent strips <think> blocks from the answer exactly as before and trims" {
         $run = Invoke-Case -Name "strip-think" -ConfigText (New-V2Config) -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "ok" @{ response = "<think>hidden reasoning</think>  Visible answer.  "; doneReason = "stop" }))
         Assert-Guards $run

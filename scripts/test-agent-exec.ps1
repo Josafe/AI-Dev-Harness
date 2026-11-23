@@ -442,6 +442,65 @@ try {
         Assert-Equal "text" "kept" $result.text
     }
 
+    Test-Case "AC-208 (M-3) a -Sleep or -OnRetry hook that throws, emits objects, breaks or continues never loses the call: the retry still happens, the status is ok, exactly one record, and the attempts are 2" {
+        $registry = New-TestRegistry -MaxAttempts 2 -Backoff 5
+        $hooks = @(
+            @{ Name = "Sleep throw"; Sleep = { param($s) throw "sleep hook failed" }; Retry = $null },
+            @{ Name = "Sleep emits an object with Attempts"; Sleep = { param($s) [pscustomobject]@{ Record = 1; Attempts = 99; Classification = "x" } }; Retry = $null },
+            @{ Name = "Sleep break"; Sleep = { param($s) break }; Retry = $null },
+            @{ Name = "Sleep continue"; Sleep = { param($s) continue }; Retry = $null },
+            @{ Name = "OnRetry throw"; Sleep = $null; Retry = { param($a, $m, $c, $w) throw "retry hook failed" } },
+            @{ Name = "OnRetry emits an object with Attempts"; Sleep = $null; Retry = { param($a, $m, $c, $w) [pscustomobject]@{ Record = 1; Attempts = 99; Classification = "x" } } },
+            @{ Name = "OnRetry break"; Sleep = $null; Retry = { param($a, $m, $c, $w) break } },
+            @{ Name = "OnRetry continue"; Sleep = $null; Retry = { param($a, $m, $c, $w) continue } },
+            @{ Name = "OnRetry emits strings"; Sleep = $null; Retry = { param($a, $m, $c, $w) "one"; "two" } }
+        )
+        foreach ($hook in $hooks) {
+            $fake = New-FakeTransport -Steps @((New-Fail5xx), (New-Ok -Text "kept"))
+            $caseRoot = New-CaseRoot
+            $arguments = @{ Execution = (Get-TestExecution $registry); Registry = $registry; System = "A"; Prompt = "B"; Transport = $fake.Transport; TelemetryRoot = $caseRoot }
+            if ($null -ne $hook.Sleep) { $arguments.Sleep = $hook.Sleep } else { $arguments.Sleep = (New-SleepRecorder).Sleep }
+            if ($null -ne $hook.Retry) { $arguments.OnRetry = $hook.Retry }
+            $result = Invoke-AgentModel @arguments
+            Assert-Equal "$($hook.Name) status" "ok" $result.status
+            Assert-Equal "$($hook.Name) text" "kept" $result.text
+            Assert-Equal "$($hook.Name) attempts" 2 $result.meta.attempts
+            Assert-Equal "$($hook.Name) generate calls" 2 $fake.Count("generate")
+            $records = @(Read-Records $caseRoot)
+            Assert-Equal "$($hook.Name) lines" 1 $records.Count
+            Assert-Equal "$($hook.Name) record attempts" 2 $records[0].attempts
+            Assert-Equal "$($hook.Name) record status" "success" $records[0].status
+        }
+        # exhausted retries with a breaking hook: the real category, not an empty one
+        $exhausted = New-FakeTransport -Steps @((New-Fail5xx)) -RepeatLast
+        $caseRoot = New-CaseRoot
+        $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -Transport $exhausted.Transport -TelemetryRoot $caseRoot -Sleep { param($s) break } -OnRetry { param($a, $m, $c, $w) continue }
+        Assert-Equal "exhausted status" "error" $result.status
+        Assert-Equal "exhausted category" "http_5xx" $result.error.category
+        Assert-Equal "exhausted attempts" 2 $result.meta.attempts
+        Assert-Equal "exhausted record category" "http_5xx" (@(Read-Records $caseRoot))[0].error_category
+        Assert-Equal "exhausted lines" 1 (@(Read-Records $caseRoot)).Count
+    }
+
+    Test-Case "AC-213 (M-3) a transport that breaks or continues is a failure record (transport_other, invalid_transport_result), one record, no loop; also in Test-OllamaModel" {
+        $registry = New-TestRegistry -MaxAttempts 2 -Backoff 0
+        foreach ($transport in @({ param($Request) break }, { param($Request) continue })) {
+            $caseRoot = New-CaseRoot
+            $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -Transport $transport -TelemetryRoot $caseRoot
+            Assert-Equal "status" "error" $result.status
+            Assert-Equal "category" "transport_other" $result.error.category
+            Assert-True "detail names the shape" ($result.error.detail.Contains("invalid_transport_result"))
+            Assert-Equal "lines" 1 (@(Read-Records $caseRoot)).Count
+
+            Reset-AgentExecState
+            $tagsRoot = New-CaseRoot
+            $tags = Test-OllamaModel -Execution (Get-TestExecution $registry) -Registry $registry -Transport $transport -TelemetryRoot $tagsRoot
+            Assert-Equal "tags available" $false $tags.available
+            Assert-Equal "tags category" "transport_other" $tags.category
+            Assert-Equal "tags lines" 1 (@(Read-Records $tagsRoot)).Count
+        }
+    }
+
     # -----------------------------------------------------------------------
     # AC-209 warm-up
     # -----------------------------------------------------------------------

@@ -522,18 +522,25 @@ function Test-OllamaModel {
             Purpose    = 'tags'
         }
         $record = $null
-        try {
-            $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $tagsRequest } else { & $Transport -Request $tagsRequest })
-            if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
-        }
-        catch {
-            $record = [pscustomobject][ordered]@{
-                ok         = $false
-                response   = $null
-                httpStatus = $null
-                failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+        $thrown = $null
+        $completed = $false
+        foreach ($once in 1) {
+            try {
+                $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $tagsRequest } else { & $Transport -Request $tagsRequest })
+                if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
+                $completed = $true
+            }
+            catch {
+                $thrown = [pscustomobject][ordered]@{
+                    ok         = $false
+                    response   = $null
+                    httpStatus = $null
+                    failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+                }
             }
         }
+        if ($null -ne $thrown) { $record = $thrown }
+        elseif (-not $completed) { $record = $null }
         if ($null -eq $record -or $null -eq $record.PSObject.Properties['ok']) {
             $record = [pscustomobject][ordered]@{
                 ok         = $false
@@ -618,8 +625,18 @@ function Test-OllamaModel {
 #   -OnRetry       script block called before each wait with: the number of the
 #                  attempt about to be made, maxAttempts, the category, the wait.
 #   -ResponseCheck script block called with the answer text (non-empty text only);
-#                  returns $null when it is acceptable, else a short code
-#                  (format_invalid).
+#                  returns nothing (or only blank values) when it is acceptable,
+#                  else a short code (format_invalid). It fails closed: a throw,
+#                  break or continue is format_invalid (response_check_error), and
+#                  any non-blank output rejects.
+# Hooks (-Transport, -Sleep, -OnRetry, -ResponseCheck) are contained: a throw, an
+# output object, a break or a continue never loses the call or its one record.
+# A hook that is not a closure runs in a child scope of the engine and sees the
+# engine's own variables before the caller's ($Model, $attempts, $url, $text,
+# $warnings, $record, $wait, $once and the like). A hook must therefore use only
+# its parameters or uniquely named variables (F-07), and must not write to a
+# variable of the engine. GetNewClosure() would hide the engine's variables but
+# also the caller's script functions, so it is not the rule.
 # meta.callId is generated here; the telemetry writer generates its own call_id
 # (it has no parameter for one), so the two differ.
 function Invoke-AgentModel {
@@ -697,19 +714,28 @@ function Invoke-AgentModel {
     $send = {
         param($Req)
 
+        # The one-pass loop contains a break or continue in the transport: it leaves
+        # the loop, not the retry loop of the caller (M-3).
         $record = $null
-        try {
-            $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $Req } else { & $Transport -Request $Req })
-            if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
-        }
-        catch {
-            return [pscustomobject][ordered]@{
-                ok         = $false
-                response   = $null
-                httpStatus = $null
-                failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+        $thrown = $null
+        $completed = $false
+        foreach ($once in 1) {
+            try {
+                $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $Req } else { & $Transport -Request $Req })
+                if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
+                $completed = $true
+            }
+            catch {
+                $thrown = [pscustomobject][ordered]@{
+                    ok         = $false
+                    response   = $null
+                    httpStatus = $null
+                    failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+                }
             }
         }
+        if ($null -ne $thrown) { return $thrown }
+        if (-not $completed) { $record = $null }
         if ($null -eq $record -or $null -eq $record.PSObject.Properties['ok']) {
             return [pscustomobject][ordered]@{
                 ok         = $false
@@ -735,12 +761,20 @@ function Invoke-AgentModel {
                 $classification = Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus
                 if ($classification.retryable -and $tries -lt $maxAttempts) {
                     $wait = Get-AgentRetryDelaySec -Attempt $tries -BackoffSec $backoffSec
+                    # A display hook or a sleep must never lose the call: a throw, an
+                    # output object, a break or a continue is contained (M-3).
                     if ($null -ne $OnRetry) {
-                        # A display hook must not lose the call.
-                        try { & $OnRetry ($tries + 1) $maxAttempts $classification.category $wait } catch { $null = $_ }
+                        foreach ($once in 1) {
+                            try { $null = & $OnRetry ($tries + 1) $maxAttempts $classification.category $wait } catch { $null = $_ }
+                        }
                     }
                     if ($wait -gt 0) {
-                        if ($null -ne $Sleep) { & $Sleep $wait } else { Start-Sleep -Seconds $wait }
+                        foreach ($once in 1) {
+                            try {
+                                if ($null -ne $Sleep) { $null = & $Sleep $wait } else { Start-Sleep -Seconds $wait }
+                            }
+                            catch { $null = $_ }
+                        }
                     }
                     continue
                 }

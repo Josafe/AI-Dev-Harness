@@ -895,12 +895,21 @@ function Invoke-AgentModel {
         else {
             if ($doneReason -ceq 'length') { $warnings.Add('output_truncated') }
             if ($null -ne $ResponseCheck) {
+                # The check fails closed: anything but a normal completion (a throw, or
+                # a break or continue that leaves the one-pass loop) is response_check_error,
+                # and any non-blank output rejects, not only the first.
                 $code = $null
-                try {
-                    $checked = @(& $ResponseCheck $text)
-                    if ($checked.Count -gt 0 -and $null -ne $checked[0]) { $code = [string]$checked[0] }
+                $checkCompleted = $false
+                foreach ($once in 1) {
+                    try {
+                        $checked = @(& $ResponseCheck $text)
+                        $rejections = @($checked | Where-Object { $null -ne $_ -and -not [string]::IsNullOrWhiteSpace([string]$_) })
+                        if ($rejections.Count -gt 0) { $code = [string]$rejections[0] }
+                        $checkCompleted = $true
+                    }
+                    catch { $null = $_ }
                 }
-                catch { $code = 'response_check_error' }
+                if (-not $checkCompleted) { $code = 'response_check_error' }
                 if (-not [string]::IsNullOrWhiteSpace($code)) {
                     $failureName = 'format_invalid'
                     $failureDetail = $code

@@ -776,6 +776,35 @@ try {
         Assert-Equal "lines" 1 (@(Read-Records $caseRoot)).Count
     }
 
+    Test-Case "AC-211 (M-2, F-25) a -ResponseCheck fails closed: break, continue, throw and any non-blank output (not only the first) give format_invalid with one record; blank outputs are accepted" {
+        $registry = New-TestRegistry
+        $rejecting = @(
+            @{ Name = "break"; Check = { param($t) break }; Detail = "response_check_error" },
+            @{ Name = "continue"; Check = { param($t) continue }; Detail = "response_check_error" },
+            @{ Name = "throw"; Check = { param($t) throw "check bug" }; Detail = "response_check_error" },
+            @{ Name = "output then break"; Check = { param($t) "x"; break }; Detail = "response_check_error" },
+            @{ Name = "null then a code"; Check = { param($t) $null; "code_b" }; Detail = "code_b" },
+            @{ Name = "blank then a code"; Check = { param($t) ""; "  "; "code_c" }; Detail = "code_c" },
+            @{ Name = "false"; Check = { param($t) $false }; Detail = "False" }
+        )
+        foreach ($case in $rejecting) {
+            $fake = New-FakeTransport -Steps @((New-Ok -Text "text"))
+            $caseRoot = New-CaseRoot
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot -Check $case.Check
+            Assert-Equal "$($case.Name) status" "error" $result.status
+            Assert-Equal "$($case.Name) category" "format_invalid" $result.error.category
+            Assert-Equal "$($case.Name) detail" $case.Detail $result.error.detail
+            Assert-Equal "$($case.Name) text kept" "text" $result.text
+            $records = @(Read-Records $caseRoot)
+            Assert-Equal "$($case.Name) lines" 1 $records.Count
+            Assert-Equal "$($case.Name) record category" "format_invalid" $records[0].error_category
+        }
+        foreach ($accepting in @({ param($t) $null; $null }, { param($t) ""; " " }, { param($t) $null; "" })) {
+            $fake = New-FakeTransport -Steps @((New-Ok -Text "text"))
+            Assert-Equal "blank outputs are accepted" "ok" (Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -Check $accepting).status
+        }
+    }
+
     Test-Case "AC-211 a body without a response member is empty_response (the error member becomes the detail); null and string responses too" {
         $registry = New-TestRegistry
         $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response ([pscustomobject]@{ error = "model is loading" })))

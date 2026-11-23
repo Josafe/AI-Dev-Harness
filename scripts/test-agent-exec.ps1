@@ -424,9 +424,10 @@ try {
         $fake = New-FakeTransport -Steps @((New-Fail5xx), (New-FailReset), (New-Ok -Text "x"))
         $retry = New-RetryRecorder
         $watch = [System.Diagnostics.Stopwatch]::StartNew()
-        # no -Sleep: the default is used, with a wait of 0 it must not be called
-        $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "AB" -Prompt "CDE" -Transport $fake.Transport -OnRetry $retry.OnRetry
+        $sleeper = New-SleepRecorder
+        $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "AB" -Prompt "CDE" -Transport $fake.Transport -OnRetry $retry.OnRetry -Sleep $sleeper.Sleep
         $watch.Stop()
+        Assert-Equal "-Sleep is not called for a wait of 0" 0 $sleeper.List.Count
         Assert-Equal "status" "ok" $result.status
         Assert-Equal "attempts" 3 $result.meta.attempts
         Assert-Equal "OnRetry" "2|3|http_5xx|0;3|3|transport_reset|0" ($retry.List -join ";")
@@ -1702,6 +1703,21 @@ try {
             $parent = $parent.Parent
         }
         Assert-True "the only Start-Sleep is the default of -Sleep in Invoke-AgentModel" $sleepInside
+    }
+
+    Test-Case "FR-204 static: the Invoke-RestMethod call takes only the splatted hashtable, whose members are Uri, Method, TimeoutSec, ContentType and Body (no -ErrorAction, -Headers or other parameter)" {
+        $function = $functionAsts["Invoke-OllamaHttp"]
+        $call = @($function.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ieq "Invoke-RestMethod" }, $true))[0]
+        Assert-Equal "command elements (name and one splat)" 2 $call.CommandElements.Count
+        Assert-True "the argument is the splatted variable" ($call.CommandElements[1] -is [System.Management.Automation.Language.VariableExpressionAst] -and $call.CommandElements[1].Splatted)
+        $members = @()
+        foreach ($table in $function.FindAll({ param($n) $n -is [System.Management.Automation.Language.HashtableAst] }, $true)) {
+            foreach ($pair in $table.KeyValuePairs) { if ($table.Parent.Parent.Left.Extent.Text -ceq '$arguments') { $members += $pair.Item1.Extent.Text } }
+        }
+        foreach ($assignment in $function.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left -is [System.Management.Automation.Language.MemberExpressionAst] -and $n.Left.Expression.Extent.Text -ceq '$arguments' }, $true)) {
+            $members += $assignment.Left.Member.Extent.Text
+        }
+        Assert-Equal "members of the splat" "Body,ContentType,Method,TimeoutSec,Uri" ((@($members) | Sort-Object) -join ",")
     }
 
     Test-Case "NFR-203 static: the only catch clauses that build a failure record from an exception type are those of the default transport and of the two callers of an injected transport" {

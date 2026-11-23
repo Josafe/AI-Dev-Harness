@@ -912,7 +912,6 @@ function Invoke-AgentModel {
                 retryable  = $named.retryable
                 attempts   = $attempts
             }
-            if ($failureName -cne 'format_invalid') { $text = '' }
         }
     } while ($false)
 

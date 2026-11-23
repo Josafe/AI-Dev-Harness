@@ -1356,6 +1356,7 @@ try {
         Assert-Equal "budget estTokens" 8001 $result.meta.budget.estTokens
         Assert-Equal "budget available" 8000 $result.meta.budget.available
         Assert-Equal "budget over" 1 $result.meta.budget.over
+        Assert-Equal "error detail (the harness's own fixed wording and the numbers)" "estimated 8001 tokens, available 8000" $result.error.detail
         Assert-Equal "sections" "template|instruction|12000|3000;task|data|20001|5001" (($result.meta.budget.sections | ForEach-Object { "$($_.name)|$($_.kind)|$($_.chars)|$($_.estTokens)" }) -join ";")
         $records = @(Read-Records $caseRoot)
         Assert-Equal "lines" 1 $records.Count

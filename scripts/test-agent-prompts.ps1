@@ -139,13 +139,22 @@ try {
         $tokens = $null; $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile($libPath, [ref]$tokens, [ref]$errors)
         if ($errors.Count -gt 0) { return "parse errors: $($errors.Count)" }
-        $forbiddenCommands = @("Invoke-Expression", "iex", "Invoke-RestMethod", "irm", "Invoke-WebRequest", "iwr", "curl", "wget",
+        $restCalls = 0
+        $forbiddenCommands = @("Invoke-Expression", "iex", "irm", "Invoke-WebRequest", "iwr", "curl", "wget",
             "Start-Process", "Start-BitsTransfer", "Stop-Process", "Get-Content", "Set-Content", "Add-Content", "Out-File",
             "Write-Host", "Write-Output", "Write-Warning", "Write-Error", "New-Object System.Net.WebClient")
         foreach ($command in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
             $name = [string]$command.GetCommandName()
             if ($forbiddenCommands -contains $name) { $problems += "forbidden command: $name" }
+            # WP-2C (AC-218): one Invoke-RestMethod call is allowed, and only inside Invoke-OllamaHttp.
+            if ($name -ieq "Invoke-RestMethod") {
+                $owner = $command.Parent
+                while ($null -ne $owner -and -not ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owner = $owner.Parent }
+                if ($null -eq $owner -or $owner.Name -cne "Invoke-OllamaHttp") { $problems += "Invoke-RestMethod outside Invoke-OllamaHttp" }
+                $restCalls++
+            }
         }
+        if ($restCalls -gt 1) { $problems += "more than one Invoke-RestMethod call ($restCalls)" }
         $formatOperators = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] -and $n.Operator -eq [System.Management.Automation.Language.TokenKind]::Format }, $true))
         if ($formatOperators.Count -gt 0) { $problems += "the -f operator is used ($($formatOperators.Count))" }
         foreach ($member in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.InvokeMemberExpressionAst] }, $true)) {
@@ -153,7 +162,7 @@ try {
             if (@("ExpandString", "Format", "Invoke", "InvokeScript", "Create") -contains $memberName) { $problems += "forbidden member call: $memberName" }
         }
         $text = Read-Utf8 $libPath
-        foreach ($literal in @("HttpWebRequest", "WebClient", "HttpClient", "System.Net.WebClient", "System.Net.WebRequest", "TcpClient", "Invoke-RestMethod", "Invoke-WebRequest", "ExpandString")) {
+        foreach ($literal in @("HttpWebRequest", "WebClient", "HttpClient", "System.Net.WebClient", "System.Net.WebRequest", "TcpClient", "Microsoft.PowerShell.Utility\Invoke-RestMethod", "Invoke-WebRequest", "ExpandString")) {
             if ($text.IndexOf($literal, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $problems += "forbidden text: $literal" }
         }
         return $problems

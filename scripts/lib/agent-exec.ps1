@@ -254,3 +254,113 @@ function Get-AgentRetryDelaySec {
     if ($delay -gt 60) { $delay = 60 }
     return [int]$delay
 }
+
+# WP-2B2: error categories (FR-211, NFR-202). Pure: it reads no file and sends
+# nothing. Rows are checked top to bottom, the first match wins, so an HTTP status
+# beats a webStatus. The category comes only from HttpStatus, Failure.exceptionType
+# and Failure.webStatus, never from message text. The Ollama JSON body is read only
+# to build detail, which never decides anything.
+#   -Failure/-HttpStatus  classify a transport failure record (FR-204);
+#   -Category             the fixed record of a category named by the engine
+#                         (context_budget_exceeded, thinking_budget_exhausted,
+#                         empty_response, format_invalid, model_not_installed, or
+#                         any other category), so every hint has one home.
+# Returns { category, retryable, hint, detail }; retryable is true for http_5xx
+# and transport_reset only. detail is Ollama's JSON "error" string (at most 500
+# characters) when there is one, else the exception type name and webStatus.
+function Get-AgentErrorCategory {
+    [CmdletBinding(DefaultParameterSetName = 'ByFailure')]
+    param(
+        [Parameter(ParameterSetName = 'ByFailure')][AllowNull()]$Failure = $null,
+        [Parameter(ParameterSetName = 'ByFailure')][AllowNull()]$HttpStatus = $null,
+        [Parameter(Mandatory = $true, ParameterSetName = 'ByName')][AllowEmptyString()][string]$Category
+    )
+
+    $hints = [ordered]@{
+        'http_5xx'                  = 'The Ollama server failed on every attempt. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
+        'http_4xx'                  = 'Ollama rejected the request. Check the model name, the options and the think setting of the profile against what the model supports.'
+        'timeout'                   = 'The server did not answer within timeoutSec of the profile. Check that the model fits in memory, or raise timeoutSec.'
+        'transport_unreachable'     = 'Ollama could not be reached. Check that the Ollama server is running and that ollamaUrl is correct.'
+        'transport_reset'           = 'The connection to Ollama was dropped on every attempt. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
+        'transport_other'           = 'The request failed for a reason the harness does not classify. See the detail and the Ollama server log.'
+        'context_budget_exceeded'   = 'The prompt does not fit the context budget of the profile. Shorten the input, or raise the context window of the profile.'
+        'thinking_budget_exhausted' = 'The model spent its output budget on reasoning and returned no answer. Raise options.num_predict or the context window of the profile, or change its think setting.'
+        'empty_response'            = 'The model returned an empty answer. Try again, or use a shorter input.'
+        'format_invalid'            = 'The answer did not have the expected format. The raw text was kept.'
+        'model_not_installed'       = 'The model is not installed on the Ollama server. Pull it with ollama pull, or choose another profile.'
+    }
+
+    if ($PSCmdlet.ParameterSetName -eq 'ByName') {
+        if (@($hints.Keys) -cnotcontains $Category) {
+            throw "invalid_arguments: unknown error category '$Category'."
+        }
+        $retryableByName = ($Category -ceq 'http_5xx' -or $Category -ceq 'transport_reset')
+        return [pscustomobject][ordered]@{
+            category  = $Category
+            retryable = $retryableByName
+            hint      = [string]$hints[$Category]
+            detail    = ''
+        }
+    }
+
+    $exceptionType = $null
+    $webStatus = $null
+    $body = $null
+    if ($null -ne $Failure) {
+        if ($null -ne $Failure.PSObject.Properties['exceptionType']) { $exceptionType = $Failure.exceptionType }
+        if ($null -ne $Failure.PSObject.Properties['webStatus']) { $webStatus = $Failure.webStatus }
+        if ($null -ne $Failure.PSObject.Properties['body']) { $body = $Failure.body }
+    }
+    $exceptionType = if ($null -eq $exceptionType) { '' } else { [string]$exceptionType }
+    $webStatus = if ($null -eq $webStatus) { '' } else { [string]$webStatus }
+
+    $hasStatus = $false
+    $status = 0
+    if ($null -ne $HttpStatus -and "$HttpStatus" -ne '') {
+        $hasStatus = $true
+        $parsed = 0
+        if ([int]::TryParse("$HttpStatus", [System.Globalization.NumberStyles]::Integer, [System.Globalization.CultureInfo]::InvariantCulture, [ref]$parsed)) {
+            $status = $parsed
+        }
+        else {
+            $status = -1
+        }
+    }
+
+    $name = 'transport_other'
+    if ($hasStatus -and $status -ge 500 -and $status -le 599) { $name = 'http_5xx' }
+    elseif ($hasStatus -and $status -ge 400 -and $status -le 499) { $name = 'http_4xx' }
+    elseif ($hasStatus) { $name = 'transport_other' }
+    elseif ($webStatus -ceq 'Timeout' -or $exceptionType -ceq 'System.TimeoutException') { $name = 'timeout' }
+    elseif (@('ConnectFailure', 'NameResolutionFailure', 'ProxyNameResolutionFailure') -ccontains $webStatus) { $name = 'transport_unreachable' }
+    elseif (@('ConnectionClosed', 'ReceiveFailure', 'SendFailure', 'KeepAliveFailure', 'PipelineFailure') -ccontains $webStatus -or
+        $exceptionType -ceq 'System.IO.IOException' -or $exceptionType -ceq 'System.Net.Sockets.SocketException') { $name = 'transport_reset' }
+
+    # detail: Ollama's JSON error string when there is one, else type and webStatus.
+    # It is display data; nothing above or below reads it to decide.
+    $detail = $null
+    if ($body -is [string] -and $body.Length -gt 0) {
+        try {
+            $json = $body | ConvertFrom-Json
+            if ($null -ne $json -and $null -ne $json.PSObject.Properties['error'] -and $json.error -is [string] -and $json.error.Length -gt 0) {
+                $detail = [string]$json.error
+            }
+        }
+        catch { $detail = $null }
+    }
+    if ($null -eq $detail) {
+        $parts = @()
+        if ($exceptionType.Length -gt 0) { $parts += $exceptionType }
+        if ($webStatus.Length -gt 0) { $parts += $webStatus }
+        if ($parts.Count -eq 0) { $parts += 'unknown' }
+        $detail = ($parts -join ' ')
+    }
+    if ($detail.Length -gt 500) { $detail = $detail.Substring(0, 500) }
+
+    return [pscustomobject][ordered]@{
+        category  = $name
+        retryable = ($name -ceq 'http_5xx' -or $name -ceq 'transport_reset')
+        hint      = [string]$hints[$name]
+        detail    = $detail
+    }
+}

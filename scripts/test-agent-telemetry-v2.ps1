@@ -501,6 +501,34 @@ try {
         }
     }
 
+    Test-Case "FR-216 (D1) an explicit -CallId is written as call_id in the JSONL and the CSV (never the run id); without it call_id is still a new GUID each time" {
+        try {
+            $env:AI_HARNESS_RUN_ID = "wp2c-fix-run-id"
+            $explicit = [guid]::NewGuid().ToString()
+            $caseRoot = New-CaseRoot
+            Write-Record $caseRoot @{ CallId = $explicit }
+            Write-Record $caseRoot
+            Write-Record $caseRoot @{ CallId = "" }
+            Write-Record $caseRoot @{ CallId = "   " }
+            $records = @(Read-Jsonl $caseRoot | ForEach-Object { $_ | ConvertFrom-Json })
+            Assert-Equal "lines" 4 $records.Count
+            Assert-Equal "explicit call_id (JSONL)" $explicit $records[0].call_id
+            Assert-Equal "run_id unchanged by -CallId" "wp2c-fix-run-id" $records[0].run_id
+            $csv = @(Import-Csv -LiteralPath (Join-Path $caseRoot "logs\model-calls.csv"))
+            Assert-Equal "explicit call_id (CSV)" $explicit $csv[0].call_id
+            foreach ($index in 1, 2, 3) {
+                Assert-True "record $index has a generated GUID" ([guid]::TryParse([string]$records[$index].call_id, [ref][guid]::Empty))
+                Assert-True "record $index is not the explicit id" ($records[$index].call_id -cne $explicit)
+                Assert-True "record $index is not the run id" ($records[$index].call_id -cne "wp2c-fix-run-id")
+            }
+            Assert-Equal "three generated ids differ" 3 (@($records[1..3] | ForEach-Object { $_.call_id } | Select-Object -Unique)).Count
+            Assert-Equal "CallId is a string parameter" "String" (Get-Command Write-HarnessModelTelemetry).Parameters["CallId"].ParameterType.Name
+        }
+        finally {
+            $env:AI_HARNESS_RUN_ID = $originalRunId
+        }
+    }
+
     # -----------------------------------------------------------------------
     # AC-204 the CSV rule
     # -----------------------------------------------------------------------
@@ -768,7 +796,7 @@ try {
         Assert-Equal "mandatory parameters" "Root,Agent,Model,StartedAt,Status" ($mandatory -join ",")
         $names = @($parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
         Assert-Equal "first parameters in order" "Root,Agent,Model,StartedAt,Status,Response,ErrorMessage" (($names | Select-Object -First 7) -join ",")
-        Assert-Equal "parameter count" 22 $names.Count
+        Assert-Equal "parameter count" 23 $names.Count
     }
 
     Test-Case "NFR-202 static: the writer never reads Exception.Message for the record (the only use is the display-only warning in the catch)" {

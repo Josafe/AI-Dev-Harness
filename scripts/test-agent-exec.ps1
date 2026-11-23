@@ -1641,6 +1641,9 @@ try {
         Assert-True "call_id is a GUID" ($r.call_id -match '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$')
         Assert-Equal "meta.promptChars" 5 $result.meta.promptChars
         Assert-Equal "meta.estPromptTokens" 2 $result.meta.estPromptTokens
+        Assert-True "meta.callId is a GUID" ([guid]::TryParse([string]$result.meta.callId, [ref][guid]::Empty))
+        Assert-Equal "meta.callId equals the JSONL call_id (D1)" $result.meta.callId $r.call_id
+        Assert-Equal "meta.callId equals the CSV call_id (D1)" $result.meta.callId (@(Import-Csv -LiteralPath (Join-Path $caseRoot "logs\model-calls.csv")))[0].call_id
     }
 
     Test-Case "AC-214 each outcome writes exactly one line with its literal category, attempts, model_called, status and error column" {
@@ -1671,6 +1674,8 @@ try {
             Assert-Equal "$($case.N): result status agrees" $(if ($case.Status -ceq "success") { "ok" } else { "error" }) $result.status
             $csv = @(Import-Csv -LiteralPath (Join-Path $caseRoot "logs\model-calls.csv"))
             Assert-Equal "$($case.N): csv rows" 1 $csv.Count
+            Assert-Equal "$($case.N): meta.callId equals the JSONL call_id" $result.meta.callId $records[0].call_id
+            Assert-Equal "$($case.N): meta.callId equals the CSV call_id" $result.meta.callId $csv[0].call_id
         }
     }
 

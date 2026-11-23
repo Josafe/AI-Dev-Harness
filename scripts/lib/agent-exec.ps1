@@ -364,3 +364,620 @@ function Get-AgentErrorCategory {
         detail    = $detail
     }
 }
+
+# WP-2C: the engine core (FR-201, FR-204, FR-207, FR-210 to FR-216). Nothing here
+# runs at dot-source time: the caches below are created on first use.
+
+# Clears the per-process caches: the /api/tags result per URL and the set of
+# warmed models (FR-213, FR-215). Every in-process test calls it first.
+function Reset-AgentExecState {
+    param()
+
+    $script:AgentExecState = @{
+        Tags   = @{}
+        Warmed = @{}
+    }
+}
+
+# The default transport (FR-204). The only function of the library that calls
+# Invoke-RestMethod and the only catch that turns an exception into a failure
+# record. -Request: Url, Method, Body (UTF-8 bytes or $null), TimeoutSec, Purpose
+# (generate, warmup or tags). The call uses exactly -Uri, -Method, -TimeoutSec
+# and, for generate and warmup, -ContentType and -Body, and nothing else (the
+# fake hosts of the earlier phases declare exactly these parameters).
+# Returns { ok, response, httpStatus, failure } with failure = { exceptionType,
+# webStatus, body }. It never reads or returns the exception message: the HTTP
+# body comes from ErrorDetails (ToString gives the body text PowerShell stored
+# there) or, when that is empty, from the response stream, at most 4096 characters.
+# Invoke-RestMethod returns only for a 2xx answer and Ollama answers 200, so the
+# status of a success is recorded as 200 (the cmdlet does not expose it).
+function Invoke-OllamaHttp {
+    param([Parameter(Mandatory = $true)][hashtable]$Request)
+
+    $arguments = @{
+        Uri        = [string]$Request.Url
+        Method     = [string]$Request.Method
+        TimeoutSec = [int]$Request.TimeoutSec
+    }
+    if ($Request.Purpose -ceq 'generate' -or $Request.Purpose -ceq 'warmup') {
+        $arguments.ContentType = 'application/json; charset=utf-8'
+        $arguments.Body = $Request.Body
+    }
+
+    try {
+        $answer = Invoke-RestMethod @arguments
+        return [pscustomobject][ordered]@{
+            ok         = $true
+            response   = $answer
+            httpStatus = 200
+            failure    = $null
+        }
+    }
+    catch {
+        $errorRecord = $_
+        $exception = $errorRecord.Exception
+        $webStatus = $null
+        $httpStatus = $null
+        $body = $null
+
+        $httpResponse = $null
+        if ($exception -is [System.Net.WebException]) {
+            $webStatus = $exception.Status.ToString()
+            $httpResponse = $exception.Response
+            if ($null -ne $httpResponse -and $null -ne $httpResponse.PSObject.Properties['StatusCode']) {
+                $httpStatus = [int]$httpResponse.StatusCode
+            }
+        }
+
+        if ($null -ne $errorRecord.ErrorDetails) {
+            $stored = [string]$errorRecord.ErrorDetails
+            if ($stored.Length -gt 0) { $body = $stored }
+        }
+        if ($null -eq $body -and $null -ne $httpResponse) {
+            try {
+                $reader = New-Object System.IO.StreamReader -ArgumentList $httpResponse.GetResponseStream(), (New-Object System.Text.UTF8Encoding($false))
+                try { $streamed = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                if ($streamed.Length -gt 0) { $body = $streamed }
+            }
+            catch { $body = $null }
+        }
+        if ($null -ne $body -and $body.Length -gt 4096) { $body = $body.Substring(0, 4096) }
+
+        return [pscustomobject][ordered]@{
+            ok         = $false
+            response   = $null
+            httpStatus = $httpStatus
+            failure    = [pscustomobject][ordered]@{
+                exceptionType = $exception.GetType().FullName
+                webStatus     = $webStatus
+                body          = $body
+            }
+        }
+    }
+}
+
+# Cached /api/tags lookup (FR-215). Returns { available, category, models, detail,
+# hint, httpStatus }: category is $null when the model is available, else the real
+# category (a transport category when /api/tags failed, model_not_installed when it
+# answered without the model). Only a successful answer is cached, per process and
+# URL (Reset-AgentExecState clears it). The model match is exact and
+# case-insensitive. It prints nothing. With -TelemetryRoot and a model that is not
+# available, it writes the one record of the call (model_called false); when the
+# model is available it writes nothing (Invoke-AgentModel writes that record).
+function Test-OllamaModel {
+    param(
+        [Parameter(Mandatory = $true)]$Execution,
+        [Parameter(Mandatory = $true)]$Registry,
+        [AllowNull()]$Transport = $null,
+        [string]$TelemetryRoot,
+        [string]$Agent
+    )
+
+    foreach ($member in @('model', 'timeoutSec', 'profile', 'modelSource')) {
+        if ($null -eq $Execution -or $null -eq $Execution.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Execution must be a record of Resolve-HarnessExecution (no '$member')."
+        }
+    }
+    if ($null -eq $Registry -or $null -eq $Registry.ollama -or $null -eq $Registry.ollama.PSObject.Properties['url'] -or
+        $null -eq $Registry.ollama.PSObject.Properties['healthTimeoutSec']) {
+        throw "invalid_arguments: -Registry must be a normalized registry (ollama.url and ollama.healthTimeoutSec)."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Execution.model)) {
+        throw "invalid_arguments: -Execution has a blank model."
+    }
+    $writeRecord = -not [string]::IsNullOrWhiteSpace($TelemetryRoot)
+    $telemetryAgent = $Agent
+    if ($writeRecord) {
+        if (-not (Get-Command -Name Write-HarnessModelTelemetry -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "invalid_arguments: -TelemetryRoot needs lib\telemetry.ps1 to be dot-sourced."
+        }
+        if ([string]::IsNullOrWhiteSpace($telemetryAgent) -and $null -ne $Execution.PSObject.Properties['agent']) { $telemetryAgent = [string]$Execution.agent }
+        if ([string]::IsNullOrWhiteSpace($telemetryAgent)) {
+            throw "invalid_arguments: -TelemetryRoot needs -Agent (or an Execution with an agent)."
+        }
+    }
+
+    if ($null -eq $script:AgentExecState) { Reset-AgentExecState }
+    $startedAt = [datetime]::UtcNow
+    $url = ([string]$Registry.ollama.url).TrimEnd('/')
+    $cacheKey = $url.ToLowerInvariant()
+    $model = [string]$Execution.model
+
+    $models = $null
+    $category = $null
+    $detail = ''
+    $hint = ''
+    $httpStatus = $null
+    $modelCalled = $true
+
+    if ($script:AgentExecState.Tags.ContainsKey($cacheKey)) {
+        $models = $script:AgentExecState.Tags[$cacheKey]
+    }
+    else {
+        $tagsRequest = @{
+            Url        = "$url/api/tags"
+            Method     = 'Get'
+            Body       = $null
+            TimeoutSec = [int]$Registry.ollama.healthTimeoutSec
+            Purpose    = 'tags'
+        }
+        $record = $null
+        try {
+            $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $tagsRequest } else { & $Transport -Request $tagsRequest })
+            if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
+        }
+        catch {
+            $record = [pscustomobject][ordered]@{
+                ok         = $false
+                response   = $null
+                httpStatus = $null
+                failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+            }
+        }
+        if ($null -eq $record -or $null -eq $record.PSObject.Properties['ok']) {
+            $record = [pscustomobject][ordered]@{
+                ok         = $false
+                response   = $null
+                httpStatus = $null
+                failure    = [pscustomobject][ordered]@{ exceptionType = 'invalid_transport_result'; webStatus = $null; body = $null }
+            }
+        }
+
+        if ($record.ok -eq $true) {
+            $names = New-Object 'System.Collections.Generic.List[string]'
+            if ($null -ne $record.response -and $null -ne $record.response.PSObject.Properties['models']) {
+                foreach ($entry in @($record.response.models)) {
+                    if ($null -ne $entry -and $null -ne $entry.PSObject.Properties['name']) { $names.Add([string]$entry.name) }
+                }
+            }
+            $models = $names.ToArray()
+            $script:AgentExecState.Tags[$cacheKey] = $models
+        }
+        else {
+            $classified = Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus
+            $category = $classified.category
+            $detail = $classified.detail
+            $hint = $classified.hint
+            $httpStatus = $record.httpStatus
+            $models = @()
+        }
+    }
+
+    $available = $false
+    if ($null -eq $category) {
+        foreach ($name in @($models)) {
+            if ([string]::Equals([string]$name, $model, [System.StringComparison]::OrdinalIgnoreCase)) { $available = $true }
+        }
+        if (-not $available) {
+            $missing = Get-AgentErrorCategory -Category 'model_not_installed'
+            $category = $missing.category
+            $detail = $model
+            $hint = $missing.hint
+        }
+    }
+
+    if (-not $available -and $writeRecord) {
+        $writerArguments = @{
+            Root          = $TelemetryRoot
+            Agent         = $telemetryAgent
+            Model         = $model
+            StartedAt     = $startedAt
+            Status        = 'error'
+            Profile       = [string]$Execution.profile
+            ModelSource   = [string]$Execution.modelSource
+            Transport     = 'blocking'
+            ModelCalled   = $false
+            ErrorCategory = $category
+            ErrorMessage  = $detail
+            TimeoutSec    = [long]$Execution.timeoutSec
+        }
+        if ($null -ne $httpStatus) { $writerArguments.HttpStatus = [long]$httpStatus }
+        $null = Write-HarnessModelTelemetry @writerArguments
+    }
+
+    return [pscustomobject][ordered]@{
+        available  = $available
+        category   = $category
+        models     = @($models)
+        detail     = $detail
+        hint       = $hint
+        httpStatus = $httpStatus
+    }
+}
+
+# One logical model call (FR-210). Returns { status, text, meta, error } and never
+# throws for a model, transport, budget or format failure; it throws only for a
+# programmer error (a missing or malformed argument). Order of work: budget check
+# (FR-209), request body (FR-207, FR-214), optional warm-up (FR-213), attempts with
+# retry (FR-212), interpretation, one telemetry record (FR-216, only when
+# -TelemetryRoot is given), return.
+#   -Transport     script block or function taking -Request (FR-204); default
+#                  Invoke-OllamaHttp.
+#   -Sleep         script block called with the seconds to wait (default
+#                  Start-Sleep); not called for a wait of 0 seconds.
+#   -OnRetry       script block called before each wait with: the number of the
+#                  attempt about to be made, maxAttempts, the category, the wait.
+#   -ResponseCheck script block called with the answer text (non-empty text only);
+#                  returns $null when it is acceptable, else a short code
+#                  (format_invalid).
+# meta.callId is generated here; the telemetry writer generates its own call_id
+# (it has no parameter for one), so the two differ.
+function Invoke-AgentModel {
+    param(
+        [Parameter(Mandatory = $true)]$Execution,
+        [Parameter(Mandatory = $true)]$Registry,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$System,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Prompt,
+        [AllowNull()][object[]]$Parts = $null,
+        [string]$Agent,
+        [string]$TelemetryRoot,
+        [AllowNull()][scriptblock]$ResponseCheck = $null,
+        [AllowNull()]$Transport = $null,
+        [AllowNull()][scriptblock]$Sleep = $null,
+        [AllowNull()][scriptblock]$OnRetry = $null
+    )
+
+    foreach ($member in @('model', 'timeoutSec', 'options', 'profile', 'modelSource', 'contextWindow', 'reservedOutputTokens')) {
+        if ($null -eq $Execution -or $null -eq $Execution.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Execution must be a record of Resolve-HarnessExecution (no '$member')."
+        }
+    }
+    foreach ($member in @('url', 'healthTimeoutSec', 'maxAttempts', 'retryBackoffSec', 'warmup')) {
+        if ($null -eq $Registry -or $null -eq $Registry.ollama -or $null -eq $Registry.ollama.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Registry must be a normalized registry (no 'ollama.$member')."
+        }
+    }
+    foreach ($member in @('stripThinking', 'budgetMode', 'charsPerToken', 'safetyMarginRatio')) {
+        if ($null -eq $Registry.defaults -or $null -eq $Registry.defaults.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Registry must be a normalized registry (no 'defaults.$member')."
+        }
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Execution.model)) {
+        throw "invalid_arguments: -Execution has a blank model."
+    }
+    $writeRecord = -not [string]::IsNullOrWhiteSpace($TelemetryRoot)
+    $telemetryAgent = $Agent
+    if ($writeRecord) {
+        if (-not (Get-Command -Name Write-HarnessModelTelemetry -CommandType Function -ErrorAction SilentlyContinue)) {
+            throw "invalid_arguments: -TelemetryRoot needs lib\telemetry.ps1 to be dot-sourced."
+        }
+        if ([string]::IsNullOrWhiteSpace($telemetryAgent) -and $null -ne $Execution.PSObject.Properties['agent']) { $telemetryAgent = [string]$Execution.agent }
+        if ([string]::IsNullOrWhiteSpace($telemetryAgent)) {
+            throw "invalid_arguments: -TelemetryRoot needs -Agent (or an Execution with an agent)."
+        }
+    }
+
+    if ($null -eq $script:AgentExecState) { Reset-AgentExecState }
+    $startedAt = [datetime]::UtcNow
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $callId = [guid]::NewGuid().ToString()
+
+    $model = [string]$Execution.model
+    $url = ([string]$Registry.ollama.url).TrimEnd('/')
+    $maxAttempts = [math]::Max(1, [int]$Registry.ollama.maxAttempts)
+    $backoffSec = [math]::Max(0, [int]$Registry.ollama.retryBackoffSec)
+    $stripThinking = [bool]$Registry.defaults.stripThinking
+    $promptChars = $System.Length + $Prompt.Length
+
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    $budget = $null
+    $thinkSent = ''
+    $modelCalled = $false
+    $attempts = 0
+    $warmupInfo = $null
+    $errorInfo = $null
+    $text = ''
+    $responseObject = $null
+    $httpStatus = $null
+    $doneReason = ''
+    $thinkingChars = $null
+
+    # One request through the transport; a transport that throws, or returns
+    # something that is not a record, becomes a failure record (FR-204).
+    $send = {
+        param($Req)
+
+        $record = $null
+        try {
+            $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $Req } else { & $Transport -Request $Req })
+            if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
+        }
+        catch {
+            return [pscustomobject][ordered]@{
+                ok         = $false
+                response   = $null
+                httpStatus = $null
+                failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+            }
+        }
+        if ($null -eq $record -or $null -eq $record.PSObject.Properties['ok']) {
+            return [pscustomobject][ordered]@{
+                ok         = $false
+                response   = $null
+                httpStatus = $null
+                failure    = [pscustomobject][ordered]@{ exceptionType = 'invalid_transport_result'; webStatus = $null; body = $null }
+            }
+        }
+        return $record
+    }
+
+    # Attempts with the retry rule of FR-212: only a retryable category is repeated,
+    # at most maxAttempts in total, waiting Get-AgentRetryDelaySec between them.
+    $sendWithRetry = {
+        param($Req)
+
+        $tries = 0
+        while ($true) {
+            $tries++
+            $record = & $send $Req
+            $classification = $null
+            if (-not $record.ok) {
+                $classification = Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus
+                if ($classification.retryable -and $tries -lt $maxAttempts) {
+                    $wait = Get-AgentRetryDelaySec -Attempt $tries -BackoffSec $backoffSec
+                    if ($null -ne $OnRetry) {
+                        # A display hook must not lose the call.
+                        try { & $OnRetry ($tries + 1) $maxAttempts $classification.category $wait } catch { $null = $_ }
+                    }
+                    if ($wait -gt 0) {
+                        if ($null -ne $Sleep) { & $Sleep $wait } else { Start-Sleep -Seconds $wait }
+                    }
+                    continue
+                }
+            }
+            return [pscustomobject]@{ Record = $record; Attempts = $tries; Classification = $classification }
+        }
+    }
+
+    $toBody = {
+        param($Payload)
+        $json = $Payload | ConvertTo-Json -Depth 10
+        # the comma keeps the byte array whole when the block's output is collected
+        return ,(New-Object System.Text.UTF8Encoding($false)).GetBytes($json)
+    }
+
+    :call do {
+        # 1. Budget (FR-209). Never truncates the prompt.
+        $budget = Test-AgentContextBudget -Execution $Execution -Registry $Registry -System $System -Prompt $Prompt -Parts $Parts
+        if ($budget.status -ceq 'exceeded') {
+            if ([string]$Registry.defaults.budgetMode -ceq 'enforce') {
+                $named = Get-AgentErrorCategory -Category 'context_budget_exceeded'
+                $errorInfo = [pscustomobject][ordered]@{
+                    category   = $named.category
+                    httpStatus = $null
+                    detail     = "estimated $($budget.estTokens) tokens, available $($budget.available)"
+                    hint       = $named.hint
+                    retryable  = $named.retryable
+                    attempts   = 0
+                }
+                break call
+            }
+            $warnings.Add('budget_exceeded')
+        }
+
+        # 2. Request body: a whitelist (FR-207). think only when the profile sets
+        # it explicitly (FR-214).
+        $payload = [ordered]@{
+            model  = $model
+            system = $System
+            prompt = $Prompt
+            stream = $false
+        }
+        if ($null -ne $Execution.options -and @($Execution.options.PSObject.Properties).Count -gt 0) { $payload.options = $Execution.options }
+        $thinkSent = 'omitted'
+        if (-not [string]::IsNullOrWhiteSpace([string]$Execution.profile) -and
+            $null -ne $Execution.PSObject.Properties['think'] -and $Execution.think -is [bool]) {
+            $payload.think = [bool]$Execution.think
+            $thinkSent = $(if ($Execution.think) { 'true' } else { 'false' })
+        }
+        $generateRequest = @{
+            Url        = "$url/api/generate"
+            Method     = 'Post'
+            Body       = (& $toBody $payload)
+            TimeoutSec = [int]$Execution.timeoutSec
+            Purpose    = 'generate'
+        }
+
+        # 3. Optional warm-up, once per model and URL per process (FR-213).
+        if ([bool]$Registry.ollama.warmup) {
+            $warmKey = "$url|$model".ToLowerInvariant()
+            if ($script:AgentExecState.Warmed.ContainsKey($warmKey)) {
+                $warmupInfo = [pscustomobject][ordered]@{ state = 'cached'; attempts = 0; category = $null }
+            }
+            else {
+                $warmPayload = [ordered]@{ model = $model }
+                if ($null -ne $Execution.options -and @($Execution.options.PSObject.Properties).Count -gt 0) { $warmPayload.options = $Execution.options }
+                $warmPayload.stream = $false
+                $warmRequest = @{
+                    Url        = "$url/api/generate"
+                    Method     = 'Post'
+                    Body       = (& $toBody $warmPayload)
+                    TimeoutSec = [int]$Execution.timeoutSec
+                    Purpose    = 'warmup'
+                }
+                $modelCalled = $true
+                $warmResult = & $sendWithRetry $warmRequest
+                if ($warmResult.Record.ok) {
+                    $script:AgentExecState.Warmed[$warmKey] = $true
+                    $warmupInfo = [pscustomobject][ordered]@{ state = 'sent'; attempts = $warmResult.Attempts; category = $null }
+                }
+                else {
+                    $attempts = $warmResult.Attempts
+                    $warmupInfo = [pscustomobject][ordered]@{ state = 'failed'; attempts = $warmResult.Attempts; category = $warmResult.Classification.category }
+                    $httpStatus = $warmResult.Record.httpStatus
+                    $errorInfo = [pscustomobject][ordered]@{
+                        category   = $warmResult.Classification.category
+                        httpStatus = $warmResult.Record.httpStatus
+                        detail     = $warmResult.Classification.detail
+                        hint       = $warmResult.Classification.hint
+                        retryable  = $warmResult.Classification.retryable
+                        attempts   = $warmResult.Attempts
+                    }
+                    break call
+                }
+            }
+        }
+
+        # 4. The generation, with retries (FR-212).
+        $modelCalled = $true
+        $generated = & $sendWithRetry $generateRequest
+        $attempts = $generated.Attempts
+        $httpStatus = $generated.Record.httpStatus
+        if (-not $generated.Record.ok) {
+            $errorInfo = [pscustomobject][ordered]@{
+                category   = $generated.Classification.category
+                httpStatus = $generated.Record.httpStatus
+                detail     = $generated.Classification.detail
+                hint       = $generated.Classification.hint
+                retryable  = $generated.Classification.retryable
+                attempts   = $generated.Attempts
+            }
+            break call
+        }
+
+        # 5. Interpretation (FR-210).
+        $responseObject = $generated.Record.response
+        $thinkingChars = 0
+        $answer = ''
+        $detailText = ''
+        if ($null -ne $responseObject -and $null -ne $responseObject.PSObject.Properties['done_reason'] -and $null -ne $responseObject.done_reason) { $doneReason = [string]$responseObject.done_reason }
+        if ($null -ne $responseObject -and $null -ne $responseObject.PSObject.Properties['thinking'] -and $responseObject.thinking -is [string]) { $thinkingChars = $responseObject.thinking.Length }
+        if ($null -ne $responseObject -and $null -ne $responseObject.PSObject.Properties['response']) {
+            $answer = [string]$responseObject.response
+            if ($stripThinking) {
+                foreach ($block in [regex]::Matches($answer, '(?s)<think>(.*?)</think>\s*')) { $thinkingChars += $block.Groups[1].Length }
+                $answer = [regex]::Replace($answer, '(?s)<think>.*?</think>\s*', '')
+            }
+            $answer = $answer.Trim()
+        }
+        elseif ($null -ne $responseObject -and $null -ne $responseObject.PSObject.Properties['error'] -and $responseObject.error -is [string]) {
+            $detailText = $responseObject.error
+        }
+        $text = $answer
+
+        if ($null -ne $responseObject -and $null -ne $Execution.contextWindow -and $null -ne $Execution.reservedOutputTokens -and
+            $null -ne $responseObject.PSObject.Properties['prompt_eval_count'] -and $null -ne $responseObject.prompt_eval_count) {
+            if ([decimal]$responseObject.prompt_eval_count -ge ([decimal]$Execution.contextWindow - [decimal]$Execution.reservedOutputTokens)) {
+                $warnings.Add('possible_prompt_truncation')
+            }
+        }
+
+        $failureName = $null
+        $failureDetail = $detailText
+        if ($text.Length -eq 0) {
+            if ($doneReason -ceq 'length') { $failureName = 'thinking_budget_exhausted' } else { $failureName = 'empty_response' }
+        }
+        else {
+            if ($doneReason -ceq 'length') { $warnings.Add('output_truncated') }
+            if ($null -ne $ResponseCheck) {
+                $code = $null
+                try {
+                    $checked = @(& $ResponseCheck $text)
+                    if ($checked.Count -gt 0 -and $null -ne $checked[0]) { $code = [string]$checked[0] }
+                }
+                catch { $code = 'response_check_error' }
+                if (-not [string]::IsNullOrWhiteSpace($code)) {
+                    $failureName = 'format_invalid'
+                    $failureDetail = $code
+                }
+            }
+        }
+        if ($null -ne $failureName) {
+            $named = Get-AgentErrorCategory -Category $failureName
+            $errorInfo = [pscustomobject][ordered]@{
+                category   = $named.category
+                httpStatus = $generated.Record.httpStatus
+                detail     = $failureDetail
+                hint       = $named.hint
+                retryable  = $named.retryable
+                attempts   = $attempts
+            }
+            if ($failureName -cne 'format_invalid') { $text = '' }
+        }
+    } while ($false)
+
+    # 6. The one telemetry record of this call (FR-216), whatever the outcome.
+    if ($writeRecord) {
+        $writerArguments = @{
+            Root        = $TelemetryRoot
+            Agent       = $telemetryAgent
+            Model       = $model
+            StartedAt   = $startedAt
+            Status      = $(if ($null -eq $errorInfo) { 'success' } else { 'error' })
+            Profile     = [string]$Execution.profile
+            ModelSource = [string]$Execution.modelSource
+            Transport   = 'blocking'
+            ModelCalled = $modelCalled
+            ThinkSent   = $thinkSent
+            PromptChars = [long]$promptChars
+            Warnings    = $warnings.ToArray()
+        }
+        if ($null -ne $Execution.timeoutSec) { $writerArguments.TimeoutSec = [long]$Execution.timeoutSec }
+        if ($null -ne $responseObject) { $writerArguments.Response = $responseObject }
+        if ($attempts -gt 0) { $writerArguments.Attempts = [long]$attempts }
+        if ($null -ne $httpStatus) { $writerArguments.HttpStatus = [long]$httpStatus }
+        if ($doneReason.Length -gt 0) { $writerArguments.DoneReason = $doneReason }
+        if ($null -ne $thinkingChars) { $writerArguments.ThinkingChars = [long]$thinkingChars }
+        if ($null -ne $budget -and $budget.status -cne 'skipped') {
+            $writerArguments.ContextWindow = [long]$budget.contextWindow
+            $writerArguments.EstPromptTokens = [long]$budget.estTokens
+        }
+        if ($null -ne $errorInfo) {
+            $writerArguments.ErrorCategory = $errorInfo.category
+            $writerArguments.ErrorMessage = $errorInfo.detail
+        }
+        $null = Write-HarnessModelTelemetry @writerArguments
+    }
+
+    $stopwatch.Stop()
+    $meta = [pscustomobject][ordered]@{
+        callId               = $callId
+        model                = $model
+        profile              = [string]$Execution.profile
+        modelSource          = [string]$Execution.modelSource
+        attempts             = $attempts
+        transport            = 'blocking'
+        modelCalled          = $modelCalled
+        thinkSent            = $thinkSent
+        doneReason           = $doneReason
+        evalCount            = $(if ($null -ne $responseObject) { $responseObject.eval_count } else { $null })
+        promptEvalCount      = $(if ($null -ne $responseObject) { $responseObject.prompt_eval_count } else { $null })
+        totalDurationNs      = $(if ($null -ne $responseObject) { $responseObject.total_duration } else { $null })
+        loadDurationNs       = $(if ($null -ne $responseObject) { $responseObject.load_duration } else { $null })
+        promptEvalDurationNs = $(if ($null -ne $responseObject) { $responseObject.prompt_eval_duration } else { $null })
+        evalDurationNs       = $(if ($null -ne $responseObject) { $responseObject.eval_duration } else { $null })
+        thinkingChars        = $thinkingChars
+        promptChars          = $promptChars
+        estPromptTokens      = $(if ($null -ne $budget -and $budget.status -cne 'skipped') { $budget.estTokens } else { $null })
+        budget               = $budget
+        warmup               = $warmupInfo
+        warnings             = $warnings.ToArray()
+        elapsedMs            = [long]$stopwatch.ElapsedMilliseconds
+    }
+    return [pscustomobject][ordered]@{
+        status = $(if ($null -eq $errorInfo) { 'ok' } else { 'error' })
+        text   = $text
+        meta   = $meta
+        error  = $errorInfo
+    }
+}

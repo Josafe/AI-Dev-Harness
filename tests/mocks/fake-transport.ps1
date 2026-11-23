@@ -57,7 +57,7 @@ function New-FakeFailureRecord {
 function New-FakeGenerateResponse {
     param(
         [string]$Text = "answer",
-        [AllowNull()][string]$Thinking = $null,
+        $Thinking = $null,
         [string]$DoneReason = "stop",
         [long]$PromptEvalCount = 10,
         [long]$EvalCount = 5

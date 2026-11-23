@@ -502,7 +502,7 @@ try {
     $problems += @(Get-TelemetryProblems $run "spec-reviewer" "success")
     if ($run.Telemetry.Count -eq 1 -and [string]$run.Telemetry[0].eval_count -cne "10") { $problems += "telemetry eval_count: expected 10, got $($run.Telemetry[0].eval_count)" }
     if ($run.CsvHeader -cne $referenceHeader) { $problems += "CSV header differs from the current Write-HarnessModelTelemetry header" }
-    if (@($referenceHeader -split ",").Count -ne 14) { $problems += "reference CSV header does not have 14 columns" }
+    if (@($referenceHeader -split ",").Count -ne 31) { $problems += "reference CSV header does not have 31 columns" }
     if (@(Get-GenerateCalls $run).Count -ne 1) { $problems += "expected one /api/generate call" }
     Write-Result -Name "AC-012 successful reviewer call writes one success record" -Problems $problems -Run $run
     Write-PromptHashes $run "spec-reviewer"

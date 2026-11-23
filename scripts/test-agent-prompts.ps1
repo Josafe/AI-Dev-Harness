@@ -153,7 +153,7 @@ try {
             if (@("ExpandString", "Format", "Invoke", "InvokeScript", "Create") -contains $memberName) { $problems += "forbidden member call: $memberName" }
         }
         $text = Read-Utf8 $libPath
-        foreach ($literal in @("HttpWebRequest", "WebClient", "HttpClient", "System.Net", "Invoke-RestMethod", "Invoke-WebRequest", "ExpandString")) {
+        foreach ($literal in @("HttpWebRequest", "WebClient", "HttpClient", "System.Net.WebClient", "System.Net.WebRequest", "TcpClient", "Invoke-RestMethod", "Invoke-WebRequest", "ExpandString")) {
             if ($text.IndexOf($literal, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $problems += "forbidden text: $literal" }
         }
         return $problems

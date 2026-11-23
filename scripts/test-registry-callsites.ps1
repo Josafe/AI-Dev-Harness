@@ -216,6 +216,8 @@ function global:Invoke-RestMethod {
         $entry.model = [string]$request.model
         $entry.hasOptions = ($null -ne $request.PSObject.Properties["options"])
         $entry.hasThink = ($null -ne $request.PSObject.Properties["think"])
+        $entry.thinkValue = $null
+        if ($entry.hasThink) { $entry.thinkValue = $request.think }
         $pairs = ""
         if ($entry.hasOptions) {
             $pairs = (@($request.options.PSObject.Properties | Sort-Object Name | ForEach-Object { "$($_.Name)=$($_.Value)" }) -join ";")

@@ -799,6 +799,48 @@ try {
         Assert-Equal "a profile without a window never warns" 0 (Invoke-Engine -Exec (Get-TestExecution $registry "a-delta") -Registry $registry -Fake $delta).meta.warnings.Count
     }
 
+    Test-Case "AC-211 (M-1) a prompt_eval_count that is a string, an object, a boolean or a huge number never throws: ok, one record, and a warning only for a real number at or above C - R (fake transport and the real default-transport path)" {
+        $registry = New-TestRegistry
+        $values = @(
+            @{ Name = "string n/a"; Value = "n/a"; Warn = $false },
+            @{ Name = "numeric string"; Value = "99999"; Warn = $false },
+            @{ Name = "object"; Value = ([pscustomobject]@{ a = 1 }); Warn = $false },
+            @{ Name = "boolean"; Value = $true; Warn = $false },
+            @{ Name = "array"; Value = @(9500, 9600); Warn = $false },
+            @{ Name = "huge double 1e300"; Value = 1e300; Warn = $true },
+            @{ Name = "huge long"; Value = [long]::MaxValue; Warn = $true },
+            @{ Name = "decimal at the limit"; Value = [decimal]9000; Warn = $true },
+            @{ Name = "double below the limit"; Value = [double]8999.5; Warn = $false }
+        )
+        foreach ($case in $values) {
+            $response = New-FakeGenerateResponse -Text "fine"
+            $response.prompt_eval_count = $case.Value
+            $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response $response))
+            $caseRoot = New-CaseRoot
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot
+            Assert-Equal "$($case.Name) status (fake transport)" "ok" $result.status
+            Assert-Equal "$($case.Name) warning (fake transport)" $case.Warn ($result.meta.warnings -ccontains "possible_prompt_truncation")
+            Assert-Equal "$($case.Name) lines (fake transport)" 1 (@(Read-Records $caseRoot)).Count
+
+            $script:wireValue = $case.Value
+            $script:rest.Handler = {
+                param($uri)
+                $answer = New-FakeGenerateResponse -Text "fine"
+                $answer.prompt_eval_count = $script:wireValue
+                return $answer
+            }
+            $script:httpStub = { param($Request) & $realHttp -Request $Request }
+            $wireRoot = New-CaseRoot
+            $sleeper = New-SleepRecorder
+            $wire = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "AB" -Prompt "CDE" -Sleep $sleeper.Sleep -TelemetryRoot $wireRoot
+            Assert-Equal "$($case.Name) status (default transport)" "ok" $wire.status
+            Assert-Equal "$($case.Name) warning (default transport)" $case.Warn ($wire.meta.warnings -ccontains "possible_prompt_truncation")
+            Assert-Equal "$($case.Name) lines (default transport)" 1 (@(Read-Records $wireRoot)).Count
+            $script:httpStub = $null
+            $script:rest.Handler = $null
+        }
+    }
+
     Test-Case "AC-211 counts and durations are copied from the response unchanged" {
         $registry = New-TestRegistry
         $response = [pscustomobject]@{

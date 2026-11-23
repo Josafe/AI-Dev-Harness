@@ -875,10 +875,15 @@ function Invoke-AgentModel {
         }
         $text = $answer
 
+        # A server value is compared only when it is a real number, and as [double]
+        # (a string, an object or a huge value must never throw: FR-210, FR-216).
         if ($null -ne $responseObject -and $null -ne $Execution.contextWindow -and $null -ne $Execution.reservedOutputTokens -and
-            $null -ne $responseObject.PSObject.Properties['prompt_eval_count'] -and $null -ne $responseObject.prompt_eval_count) {
-            if ([decimal]$responseObject.prompt_eval_count -ge ([decimal]$Execution.contextWindow - [decimal]$Execution.reservedOutputTokens)) {
-                $warnings.Add('possible_prompt_truncation')
+            $null -ne $responseObject.PSObject.Properties['prompt_eval_count']) {
+            $evaluated = $responseObject.prompt_eval_count
+            if ($evaluated -is [int] -or $evaluated -is [long] -or $evaluated -is [decimal] -or $evaluated -is [double]) {
+                if ([double]$evaluated -ge ([double]$Execution.contextWindow - [double]$Execution.reservedOutputTokens)) {
+                    $warnings.Add('possible_prompt_truncation')
+                }
             }
         }
 

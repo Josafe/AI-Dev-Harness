@@ -455,6 +455,7 @@ try {
             @{ Name = "OnRetry continue"; Sleep = $null; Retry = { param($a, $m, $c, $w) continue } },
             @{ Name = "OnRetry emits strings"; Sleep = $null; Retry = { param($a, $m, $c, $w) "one"; "two" } }
         )
+        $hooksDone = 0
         foreach ($hook in $hooks) {
             $fake = New-FakeTransport -Steps @((New-Fail5xx), (New-Ok -Text "kept"))
             $caseRoot = New-CaseRoot
@@ -470,7 +471,9 @@ try {
             Assert-Equal "$($hook.Name) lines" 1 $records.Count
             Assert-Equal "$($hook.Name) record attempts" 2 $records[0].attempts
             Assert-Equal "$($hook.Name) record status" "success" $records[0].status
+            $hooksDone++
         }
+        Assert-Equal "every hook ran to the end of the loop body (a leaked break would end the loop early)" $hooks.Count $hooksDone
         # exhausted retries with a breaking hook: the real category, not an empty one
         $exhausted = New-FakeTransport -Steps @((New-Fail5xx)) -RepeatLast
         $caseRoot = New-CaseRoot
@@ -484,6 +487,8 @@ try {
 
     Test-Case "AC-213 (M-3) a transport that breaks or continues is a failure record (transport_other, invalid_transport_result), one record, no loop; also in Test-OllamaModel" {
         $registry = New-TestRegistry -MaxAttempts 2 -Backoff 0
+        # a break or continue that escaped the engine would end this loop early and silently
+        $completedIterations = 0
         foreach ($transport in @({ param($Request) break }, { param($Request) continue })) {
             $caseRoot = New-CaseRoot
             $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -Transport $transport -TelemetryRoot $caseRoot
@@ -498,7 +503,9 @@ try {
             Assert-Equal "tags available" $false $tags.available
             Assert-Equal "tags category" "transport_other" $tags.category
             Assert-Equal "tags lines" 1 (@(Read-Records $tagsRoot)).Count
+            $completedIterations++
         }
+        Assert-Equal "both transports ran to the end of the loop body" 2 $completedIterations
     }
 
     # -----------------------------------------------------------------------
@@ -848,6 +855,7 @@ try {
             @{ Name = "blank then a code"; Check = { param($t) ""; "  "; "code_c" }; Detail = "code_c" },
             @{ Name = "false"; Check = { param($t) $false }; Detail = "False" }
         )
+        $checksDone = 0
         foreach ($case in $rejecting) {
             $fake = New-FakeTransport -Steps @((New-Ok -Text "text"))
             $caseRoot = New-CaseRoot
@@ -859,7 +867,9 @@ try {
             $records = @(Read-Records $caseRoot)
             Assert-Equal "$($case.Name) lines" 1 $records.Count
             Assert-Equal "$($case.Name) record category" "format_invalid" $records[0].error_category
+            $checksDone++
         }
+        Assert-Equal "every check ran to the end of the loop body (a leaked break or continue would end the loop early)" $rejecting.Count $checksDone
         foreach ($accepting in @({ param($t) $null; $null }, { param($t) ""; " " }, { param($t) $null; "" })) {
             $fake = New-FakeTransport -Steps @((New-Ok -Text "text"))
             Assert-Equal "blank outputs are accepted" "ok" (Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -Check $accepting).status

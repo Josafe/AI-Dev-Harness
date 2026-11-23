@@ -235,6 +235,7 @@ try {
         Assert-Equal "'503' text" "http_5xx" (Get-Category -HttpStatus "503")
         Assert-Equal "'abc' text" "transport_other" (Get-Category -HttpStatus "abc")
         Assert-Equal "blank text means no status" "transport_other" (Get-Category -HttpStatus "")
+        Assert-Equal "unparsable status is still an HTTP status: it beats a webStatus" "transport_other" (Get-Category -Failure (New-Failure -Type "System.Net.WebException" -WebStatus "Timeout") -HttpStatus "abc")
     }
 
     Test-Case "AC-207 every WebExceptionStatus member maps as the table says (all 21 members, no status present)" {

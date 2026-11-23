@@ -116,7 +116,7 @@ try {
 
     # ----- Library hygiene (FR-201, NFR-203) -----------------------------------
 
-    Test-Case "FR-201 dot-sourcing prints nothing and defines exactly the WP-2A functions" {
+    Test-Case "FR-201 dot-sourcing prints nothing and defines exactly the library functions" {
         $result = & {
             $before = @(Get-ChildItem Function:\ | ForEach-Object { $_.Name })
             $output = @(. { . $libPath } *>&1)
@@ -126,7 +126,7 @@ try {
             $after = @(Get-ChildItem Function:\ | ForEach-Object { $_.Name })
             [pscustomobject]@{ Output = $output; New = @($after | Where-Object { $before -notcontains $_ } | Sort-Object) }
         }
-        $expected = @("New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt") | Sort-Object
+        $expected = @("Get-AgentRetryDelaySec", "New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt", "Test-AgentContextBudget") | Sort-Object
         if ($result.Output.Count -ne 0) { "dot-sourcing produced output: $($result.Output -join '|')" }
         if (($result.New -join ",") -cne ($expected -join ",")) { "functions defined: $($result.New -join ', ')" }
     }

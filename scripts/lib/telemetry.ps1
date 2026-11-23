@@ -16,7 +16,8 @@
 #   -ErrorMessage), else -ErrorMessage alone. CR and LF are each replaced by a space
 #   and the text is cut at 500 characters (a surrogate pair is never split). The
 #   writer never reads Exception.Message: the caller passes the detail.
-# call_id is always a new GUID. run_id is AI_HARNESS_RUN_ID or a GUID.
+# call_id is a new GUID unless -CallId is given (the engine passes its own, so that
+# meta.callId equals call_id); it is never the run id. run_id is AI_HARNESS_RUN_ID or a GUID.
 #
 # Files: JSONL always gets the new keys. CSV: no logs\model-calls.csv -> create it
 # with the version 2 header; its first line equals the version 2 header (a leading
@@ -48,7 +49,8 @@ function Write-HarnessModelTelemetry {
         [Nullable[long]]$ContextWindow = $null,
         [Nullable[long]]$PromptChars = $null,
         [Nullable[long]]$EstPromptTokens = $null,
-        [string[]]$Warnings = @()
+        [string[]]$Warnings = @(),
+        [string]$CallId = ""
     )
 
     try {
@@ -103,7 +105,7 @@ function Write-HarnessModelTelemetry {
             eval_duration_ns        = $Response.eval_duration
             error                   = $errorText
             schema_version          = 2
-            call_id                 = [guid]::NewGuid().ToString()
+            call_id                 = $(if ([string]::IsNullOrWhiteSpace($CallId)) { [guid]::NewGuid().ToString() } else { $CallId })
             profile                 = $Profile
             model_source            = $ModelSource
             transport               = $Transport

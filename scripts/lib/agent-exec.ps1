@@ -654,8 +654,8 @@ function Test-OllamaModel {
 # its parameters or uniquely named variables (F-07), and must not write to a
 # variable of the engine. GetNewClosure() would hide the engine's variables but
 # also the caller's script functions, so it is not the rule.
-# meta.callId is generated here; the telemetry writer generates its own call_id
-# (it has no parameter for one), so the two differ.
+# meta.callId is generated here and passed to the telemetry writer as -CallId, so
+# meta.callId equals the call_id of the record (FR-216).
 function Invoke-AgentModel {
     param(
         [Parameter(Mandatory = $true)]$Execution,
@@ -991,6 +991,7 @@ function Invoke-AgentModel {
             Agent       = $telemetryAgent
             Model       = $model
             StartedAt   = $startedAt
+            CallId      = $callId
             Status      = $(if ($null -eq $errorInfo) { 'success' } else { 'error' })
             Profile     = [string]$Execution.profile
             ModelSource = [string]$Execution.modelSource

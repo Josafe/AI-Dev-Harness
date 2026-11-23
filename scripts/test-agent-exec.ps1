@@ -518,6 +518,8 @@ try {
         Assert-Equal "warmup members" "model,options,stream" (Get-BodyMembers $warm)
         Assert-Equal "warmup model" "m-alpha" $warm.Body.model
         Assert-Equal "warmup stream is JSON false" $false $warm.Body.stream
+        Assert-True "warmup stream is a JSON boolean, not the text False (M-5)" ($warm.Body.stream -is [bool])
+        Assert-True "the raw warmup body has stream:false" ($warm.BodyText -match '"stream"\s*:\s*false')
         Assert-Equal "warmup option temperature" 0.2 $warm.Body.options.temperature
         Assert-Equal "warmup option num_predict" 77 $warm.Body.options.num_predict
         Assert-Equal "warmup option num_ctx" 10000 $warm.Body.options.num_ctx
@@ -968,6 +970,8 @@ try {
             Invoke-Engine -Exec (Get-TestExecution $registry $agent) -Registry $registry -Fake $fake -System "SYS" -Prompt "PRM" | Out-Null
             Assert-Equal "$agent members" $expected[$agent] (Get-BodyMembers $fake.Calls[0])
             Assert-Equal "$agent stream" $false $fake.Calls[0].Body.stream
+            Assert-True "$agent stream is a JSON boolean, not the text False (M-5)" ($fake.Calls[0].Body.stream -is [bool])
+            Assert-True "$agent raw body has stream:false" ($fake.Calls[0].BodyText -match '"stream"\s*:\s*false')
             Assert-Equal "$agent system" "SYS" $fake.Calls[0].Body.system
             Assert-Equal "$agent prompt" "PRM" $fake.Calls[0].Body.prompt
             Assert-Equal "$agent purpose" "generate" $fake.Calls[0].Purpose
@@ -1778,6 +1782,158 @@ try {
         $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -Transport $fake2.Transport -TelemetryRoot $blocked 3>$null
         Assert-Equal "status" "ok" $result.status
         Assert-Equal "text" "still fine" $result.text
+    }
+
+    # -----------------------------------------------------------------------
+    # WP-2C fix round: gaps found by the independent review (M-5, F-08 to F-20)
+    # -----------------------------------------------------------------------
+    Write-Host ""
+    Write-Host "=== WP-2C fix round ===" -ForegroundColor Cyan
+
+    Test-Case "AC-208 (M-5, F-09) the default wait is Start-Sleep in seconds: backoff 1 and no -Sleep waits at least 900 ms and at most 5 s, then the retry succeeds" {
+        $registry = New-TestRegistry -MaxAttempts 2 -Backoff 1
+        $fake = New-FakeTransport -Steps @((New-Fail5xx), (New-Ok -Text "after the wait"))
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -Transport $fake.Transport
+        $watch.Stop()
+        Assert-Equal "status" "ok" $result.status
+        Assert-Equal "attempts" 2 $result.meta.attempts
+        Write-Host ("       default wait measured: {0} ms" -f $watch.ElapsedMilliseconds)
+        Assert-True "waited at least 900 ms (seconds, not milliseconds, not skipped)" ($watch.ElapsedMilliseconds -ge 900)
+        Assert-True "waited at most 5 s" ($watch.ElapsedMilliseconds -le 5000)
+        Assert-True "meta.elapsedMs covers the wait" ($result.meta.elapsedMs -ge 900)
+    }
+
+    Test-Case "AC-214 (F-11) without -TelemetryRoot nothing is written anywhere: no file appears under the suite's temporary folder or the case folder" {
+        $registry = New-TestRegistry
+        $bare = New-CaseRoot
+        $before = @(Get-ChildItem -LiteralPath $tempRoot -Recurse -Force | ForEach-Object { $_.FullName }).Count
+        $fake = New-FakeTransport -Steps @((New-Ok))
+        Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake | Out-Null
+        $after = @(Get-ChildItem -LiteralPath $tempRoot -Recurse -Force | ForEach-Object { $_.FullName }).Count
+        Assert-Equal "entries under the temporary folder" $before $after
+        Assert-Equal "entries in the case folder" 0 @(Get-ChildItem -LiteralPath $bare -Recurse -Force).Count
+        Assert-True "no logs folder in the working directory from this call" (-not (Test-Path -LiteralPath (Join-Path (Get-Location).Path "logs\model-calls.jsonl")) -or (Get-Item -LiteralPath (Join-Path (Get-Location).Path "logs\model-calls.jsonl")).LastWriteTimeUtc -lt [datetime]::UtcNow.AddSeconds(-30))
+    }
+
+    Test-Case "AC-209 (F-15) a warm-up that fails carries its http status, detail and hint in the result and the record (http_status 500, error 'http_5xx: gpu init failed')" {
+        $registry = New-TestRegistry -Warmup $true -MaxAttempts 2 -Backoff 5
+        $fake = New-FakeTransport -Steps @((New-Fail5xx)) -RepeatLast
+        $caseRoot = New-CaseRoot
+        $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot
+        Assert-Equal "error.httpStatus" 500 $result.error.httpStatus
+        Assert-Equal "error.detail" "gpu init failed" $result.error.detail
+        Assert-True "error.hint is the hint of the category" ($result.error.hint.Length -gt 0 -and $result.error.hint -ceq (Get-AgentErrorCategory -Category "http_5xx").hint)
+        Assert-Equal "error.retryable" $true $result.error.retryable
+        Assert-Equal "error.attempts" 2 $result.error.attempts
+        $record = @(Read-Records $caseRoot)[0]
+        Assert-Equal "record http_status" 500 $record.http_status
+        Assert-Equal "record error column" "http_5xx: gpu init failed" $record.error
+        Assert-Equal "record attempts" 2 $record.attempts
+        Assert-Equal "record model_called" $true $record.model_called
+    }
+
+    Test-Case "FR-215 (F-15) a failed /api/tags carries its detail, hint and http status in the result and the error column; a missing model names the model" {
+        $registry = New-TestRegistry
+        $cases = @(
+            @{ Step = (New-FakeFailureRecord -WebStatus "Timeout"); Category = "timeout"; Detail = "System.Net.WebException Timeout"; Status = "" },
+            @{ Step = (New-FakeFailureRecord -WebStatus "ConnectFailure"); Category = "transport_unreachable"; Detail = "System.Net.WebException ConnectFailure"; Status = "" },
+            @{ Step = (New-FakeFailureRecord -WebStatus "ProtocolError" -HttpStatus 500 -Body '{"error":"x"}'); Category = "http_5xx"; Detail = "x"; Status = 500 },
+            @{ Step = (New-FakeFailureRecord -WebStatus "ProtocolError" -HttpStatus 404); Category = "http_4xx"; Detail = "System.Net.WebException ProtocolError"; Status = 404 },
+            @{ Step = (New-FakeFailureRecord -WebStatus "ConnectionClosed"); Category = "transport_reset"; Detail = "System.Net.WebException ConnectionClosed"; Status = "" },
+            @{ Step = (New-Object System.InvalidOperationException "boom"); Category = "transport_other"; Detail = "System.InvalidOperationException"; Status = "" }
+        )
+        foreach ($case in $cases) {
+            Reset-AgentExecState
+            $fake = New-FakeTransport -Steps @($case.Step)
+            $caseRoot = New-CaseRoot
+            $result = Test-OllamaModel -Execution (Get-TestExecution $registry) -Registry $registry -Transport $fake.Transport -TelemetryRoot $caseRoot
+            Assert-Equal "$($case.Category) detail" $case.Detail $result.detail
+            Assert-True "$($case.Category) hint is the hint of the category" ($result.hint.Length -gt 0 -and $result.hint -ceq (Get-AgentErrorCategory -Category $case.Category).hint)
+            Assert-Equal "$($case.Category) httpStatus" $case.Status $result.httpStatus
+            Assert-Equal "$($case.Category) error column" "$($case.Category): $($case.Detail)" (@(Read-Records $caseRoot))[0].error
+        }
+        Reset-AgentExecState
+        $missing = New-FakeTransport -Steps @((New-FakeOkRecord -Response (New-FakeTagsResponse -Models @("other"))))
+        $caseRoot = New-CaseRoot
+        $result = Test-OllamaModel -Execution (Get-TestExecution $registry) -Registry $registry -Transport $missing.Transport -TelemetryRoot $caseRoot
+        Assert-Equal "model_not_installed detail is the model" "m-alpha" $result.detail
+        Assert-True "model_not_installed hint" ($result.hint.Length -gt 0 -and $result.hint -ceq (Get-AgentErrorCategory -Category "model_not_installed").hint)
+        Assert-Equal "model_not_installed error column" "model_not_installed: m-alpha" (@(Read-Records $caseRoot))[0].error
+    }
+
+    Test-Case "AC-213 (F-16) the error body read from the response stream (chunked answer, empty ErrorDetails) is decoded as UTF-8: non-ASCII text survives, also as the detail" {
+        $text = "caf" + [char]0x00E9 + " " + [char]0x4E2D + [char]0x6587 + " " + [char]::ConvertFromUtf32(0x1F600)
+        $script:wireText = $text
+        $script:rest.Handler = { param($uri) throw (New-FakeHttpWebException -StatusCode 500 -Body ('{"error":"' + $script:wireText + '"}')) }
+        $record = & $realHttp -Request @{ Url = "http://127.0.0.1:9/api/generate"; Method = "Post"; Body = [byte[]](1); TimeoutSec = 9; Purpose = "generate" }
+        Assert-Equal "body round trip" ('{"error":"' + $text + '"}') $record.failure.body
+        Assert-Equal "detail round trip" $text (Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus).detail
+    }
+
+    Test-Case "FR-204 (F-20) a trailing slash of ollama.url is trimmed: generate, warm-up and tags requests go to /api/... with a single slash" {
+        $registry = New-TestRegistry -Warmup $true
+        foreach ($suffix in "/", "//") {
+            Reset-AgentExecState
+            $slashed = $registry.PSObject.Copy()
+            $slashed.ollama = $registry.ollama.PSObject.Copy()
+            $slashed.ollama.url = "http://127.0.0.1:9" + $suffix
+            $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response (New-FakeTagsResponse -Models @("m-alpha"))), (New-FakeOkRecord -Response ([pscustomobject]@{ done = $true })), (New-Ok))
+            $available = Test-OllamaModel -Execution (Get-TestExecution $registry) -Registry $slashed -Transport $fake.Transport
+            Assert-Equal "available '$suffix'" $true $available.available
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $slashed -Fake $fake
+            Assert-Equal "status '$suffix'" "ok" $result.status
+            Assert-Equal "urls '$suffix'" "http://127.0.0.1:9/api/tags,http://127.0.0.1:9/api/generate,http://127.0.0.1:9/api/generate" (($fake.Calls | ForEach-Object { $_.Url }) -join ",")
+        }
+    }
+
+    Test-Case "AC-211 (F-15, review N11) an interpretation failure (empty_response, thinking_budget_exhausted, format_invalid) carries the http status of the answer in error.httpStatus; a transport failure before any answer has no thinkingChars and a blank thinking_chars" {
+        $registry = New-TestRegistry
+        $cases = @(
+            @{ Step = (New-Ok -Text ""); Check = $null; Category = "empty_response" },
+            @{ Step = (New-Ok -Text "" -DoneReason "length"); Check = $null; Category = "thinking_budget_exhausted" },
+            @{ Step = (New-Ok -Text "x"); Check = { param($t) "code" }; Category = "format_invalid" }
+        )
+        foreach ($case in $cases) {
+            $fake = New-FakeTransport -Steps @($case.Step)
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -Check $case.Check
+            Assert-Equal "$($case.Category) category" $case.Category $result.error.category
+            Assert-Equal "$($case.Category) error.httpStatus" 200 $result.error.httpStatus
+        }
+        $single = New-TestRegistry -MaxAttempts 1
+        $caseRoot = New-CaseRoot
+        $failed = Invoke-Engine -Exec (Get-TestExecution $single) -Registry $single -Fake (New-FakeTransport -Steps @((New-Fail5xx))) -TelemetryRoot $caseRoot
+        Assert-True "meta.thinkingChars is null without an answer" ($null -eq $failed.meta.thinkingChars)
+        Assert-Equal "record thinking_chars is blank without an answer" "" (@(Read-Records $caseRoot))[0].thinking_chars
+        $answered = Invoke-Engine -Exec (Get-TestExecution $single) -Registry $single -Fake (New-FakeTransport -Steps @((New-Ok -Text "x"))) -TelemetryRoot (New-CaseRoot)
+        Assert-Equal "meta.thinkingChars is 0 with an answer" 0 $answered.meta.thinkingChars
+    }
+
+    Test-Case "AC-211 (F-25, review N19) the first non-blank output of a -ResponseCheck is the code (not the last)" {
+        $registry = New-TestRegistry
+        $fake = New-FakeTransport -Steps @((New-Ok -Text "text"))
+        $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -Check { param($t) $null; "code_first"; "code_second" }
+        Assert-Equal "category" "format_invalid" $result.error.category
+        Assert-Equal "detail" "code_first" $result.error.detail
+    }
+
+    Test-Case "AC-214 (F-10, review N15 to N17) meta.callId is a new GUID per call; elapsedMs and the record's duration_ms measure the call (a 40 ms transport gives at least 30 ms)" {
+        $registry = New-TestRegistry
+        $slow = { param($r) $spin = [System.Diagnostics.Stopwatch]::StartNew(); while ($spin.ElapsedMilliseconds -lt 40) { }; New-Ok }
+        $ids = New-Object 'System.Collections.Generic.List[string]'
+        foreach ($i in 1..2) {
+            $fake = New-FakeTransport -Steps @($slow)
+            $caseRoot = New-CaseRoot
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot
+            Assert-True "callId is a GUID ($i)" ([guid]::TryParse([string]$result.meta.callId, [ref][guid]::Empty))
+            $ids.Add([string]$result.meta.callId)
+            Assert-True "elapsedMs at least 30 ($i): $($result.meta.elapsedMs)" ($result.meta.elapsedMs -ge 30)
+            Assert-True "elapsedMs under 5000 ($i)" ($result.meta.elapsedMs -lt 5000)
+            $record = @(Read-Records $caseRoot)[0]
+            Assert-True "record duration_ms at least 30 ($i): $($record.duration_ms)" ([long]$record.duration_ms -ge 30)
+            Assert-True "record duration_ms under 5000 ($i)" ([long]$record.duration_ms -lt 5000)
+        }
+        Assert-True "the two calls have different callIds" ($ids[0] -cne $ids[1])
     }
 
     # -----------------------------------------------------------------------

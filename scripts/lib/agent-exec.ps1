@@ -436,8 +436,15 @@ function Invoke-OllamaHttp {
         }
         if ($null -eq $body -and $null -ne $httpResponse) {
             try {
+                # At most 4096 characters are read (F-23): a long or endless error body
+                # is never read to its end.
                 $reader = New-Object System.IO.StreamReader -ArgumentList $httpResponse.GetResponseStream(), (New-Object System.Text.UTF8Encoding($false))
-                try { $streamed = $reader.ReadToEnd() } finally { $reader.Dispose() }
+                try {
+                    $buffer = New-Object 'char[]' 4096
+                    $count = $reader.ReadBlock($buffer, 0, 4096)
+                    $streamed = [string]::new($buffer, 0, $count)
+                }
+                finally { $reader.Dispose() }
                 if ($streamed.Length -gt 0) { $body = $streamed }
             }
             catch { $body = $null }
@@ -509,7 +516,7 @@ function Test-OllamaModel {
     $detail = ''
     $hint = ''
     $httpStatus = $null
-    $modelCalled = $true
+    $unreadableTags = $null
 
     if ($script:AgentExecState.Tags.ContainsKey($cacheKey)) {
         $models = $script:AgentExecState.Tags[$cacheKey]
@@ -553,13 +560,21 @@ function Test-OllamaModel {
 
         if ($record.ok -eq $true) {
             $names = New-Object 'System.Collections.Generic.List[string]'
-            if ($null -ne $record.response -and $null -ne $record.response.PSObject.Properties['models']) {
+            $hasModels = ($null -ne $record.response -and $null -ne $record.response.PSObject.Properties['models'])
+            if ($hasModels) {
                 foreach ($entry in @($record.response.models)) {
                     if ($null -ne $entry -and $null -ne $entry.PSObject.Properties['name']) { $names.Add([string]$entry.name) }
                 }
             }
             $models = $names.ToArray()
-            $script:AgentExecState.Tags[$cacheKey] = $models
+            # Only an answer that has a models member is cached (F-18): an empty or
+            # foreign 200 body (HTML, 204, a truncated body) is asked for again.
+            if ($hasModels) { $script:AgentExecState.Tags[$cacheKey] = $models }
+            else {
+                $answerType = 'null'
+                if ($null -ne $record.response) { $answerType = $record.response.GetType().FullName }
+                $unreadableTags = "tags answer without a models member: $answerType"
+            }
         }
         else {
             $classified = Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus
@@ -580,6 +595,7 @@ function Test-OllamaModel {
             $missing = Get-AgentErrorCategory -Category 'model_not_installed'
             $category = $missing.category
             $detail = $model
+            if ($null -ne $unreadableTags) { $detail = "$model ($unreadableTags)" }
             $hint = $missing.hint
         }
     }
@@ -819,11 +835,14 @@ function Invoke-AgentModel {
             stream = $false
         }
         if ($null -ne $Execution.options -and @($Execution.options.PSObject.Properties).Count -gt 0) { $payload.options = $Execution.options }
-        $thinkSent = 'omitted'
+        # thinkSent reports the generation request, so it is set only when that
+        # request is sent (after the warm-up), and stays blank on a refusal or a
+        # failed warm-up (F-14).
+        $thinkToSend = 'omitted'
         if (-not [string]::IsNullOrWhiteSpace([string]$Execution.profile) -and
             $null -ne $Execution.PSObject.Properties['think'] -and $Execution.think -is [bool]) {
             $payload.think = [bool]$Execution.think
-            $thinkSent = $(if ($Execution.think) { 'true' } else { 'false' })
+            $thinkToSend = $(if ($Execution.think) { 'true' } else { 'false' })
         }
         $generateRequest = @{
             Url        = "$url/api/generate"
@@ -874,6 +893,7 @@ function Invoke-AgentModel {
         }
 
         # 4. The generation, with retries (FR-212).
+        $thinkSent = $thinkToSend
         $modelCalled = $true
         $generated = & $sendWithRetry $generateRequest
         $attempts = $generated.Attempts

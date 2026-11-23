@@ -1936,6 +1936,109 @@ try {
         Assert-True "the two calls have different callIds" ($ids[0] -cne $ids[1])
     }
 
+    Test-Case "AC-210 (F-14) think_sent describes the generation request: blank after a failed warm-up and after a budget refusal, set when the generation is sent (also after a successful warm-up)" {
+        $registry = New-TestRegistry -Warmup $true -MaxAttempts 1
+        $caseRoot = New-CaseRoot
+        $failed = Invoke-Engine -Exec (Get-TestExecution $registry "a-alpha") -Registry $registry -Fake (New-FakeTransport -Steps @((New-Fail5xx))) -TelemetryRoot $caseRoot
+        Assert-Equal "failed warm-up: meta.thinkSent" "" $failed.meta.thinkSent
+        Assert-Equal "failed warm-up: record think_sent" "" (@(Read-Records $caseRoot))[0].think_sent
+        Assert-Equal "failed warm-up: modelCalled" $true $failed.meta.modelCalled
+
+        Reset-AgentExecState
+        $caseRoot2 = New-CaseRoot
+        $sent = Invoke-Engine -Exec (Get-TestExecution $registry "a-beta") -Registry $registry -Fake (New-FakeTransport -Steps @((New-FakeOkRecord -Response ([pscustomobject]@{ done = $true })), (New-Ok))) -TelemetryRoot $caseRoot2
+        Assert-Equal "after a successful warm-up: meta.thinkSent" "false" $sent.meta.thinkSent
+        Assert-Equal "after a successful warm-up: record think_sent" "false" (@(Read-Records $caseRoot2))[0].think_sent
+
+        $enforce = New-TestRegistry -BudgetMode "enforce" -CharsPerToken 4 -Warmup $true
+        $caseRoot3 = New-CaseRoot
+        $refused = Invoke-Engine -Exec (Get-TestExecution $enforce "a-alpha") -Registry $enforce -Fake (New-FakeTransport -Steps @((New-Ok))) -System ("s" * 40000) -TelemetryRoot $caseRoot3
+        Assert-Equal "budget refusal: meta.thinkSent" "" $refused.meta.thinkSent
+        Assert-Equal "budget refusal: record think_sent" "" (@(Read-Records $caseRoot3))[0].think_sent
+    }
+
+    Test-Case "FR-215 (F-18) a 200 answer of /api/tags without a models member is not cached and its detail names the type; an answer with a models member is cached" {
+        $registry = New-TestRegistry
+        $execution = Get-TestExecution $registry
+        foreach ($shape in @(@{ Response = ""; Type = "System.String" }, @{ Response = $null; Type = "null" }, @{ Response = ([pscustomobject]@{ note = 1 }); Type = "System.Management.Automation.PSCustomObject" }, @{ Response = "<html></html>"; Type = "System.String" })) {
+            Reset-AgentExecState
+            $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response $shape.Response), (New-FakeOkRecord -Response (New-FakeTagsResponse -Models @("m-alpha"))))
+            $first = Test-OllamaModel -Execution $execution -Registry $registry -Transport $fake.Transport
+            Assert-Equal "category ($($shape.Type))" "model_not_installed" $first.category
+            Assert-True "detail names the type ($($shape.Type)): $($first.detail)" ($first.detail.Contains($shape.Type) -and $first.detail.Contains("m-alpha"))
+            $second = Test-OllamaModel -Execution $execution -Registry $registry -Transport $fake.Transport
+            Assert-Equal "asked again ($($shape.Type))" 2 $fake.Count("tags")
+            Assert-Equal "second answer is used ($($shape.Type))" $true $second.available
+            $third = Test-OllamaModel -Execution $execution -Registry $registry -Transport $fake.Transport
+            Assert-Equal "now cached ($($shape.Type))" 2 $fake.Count("tags")
+            Assert-Equal "third available" $true $third.available
+        }
+        Reset-AgentExecState
+        $empty = New-FakeTransport -Steps @((New-FakeOkRecord -Response (New-FakeTagsResponse -Models @()))) -RepeatLast
+        $none = Test-OllamaModel -Execution $execution -Registry $registry -Transport $empty.Transport
+        Test-OllamaModel -Execution $execution -Registry $registry -Transport $empty.Transport | Out-Null
+        Assert-Equal "an empty models list is cached" 1 $empty.Count("tags")
+        Assert-Equal "an empty models list: detail is the model only" "m-alpha" $none.detail
+    }
+
+    Test-Case "FR-215 (F-13) static: Test-OllamaModel has no unused modelCalled variable" {
+        $parseTokens = $null; $parseErrors = $null
+        $libraryAst = [System.Management.Automation.Language.Parser]::ParseFile($engineLibrary, [ref]$parseTokens, [ref]$parseErrors)
+        $function = $libraryAst.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq "Test-OllamaModel" }, $true)[0]
+        Assert-True "the function was found" ($null -ne $function)
+        Assert-Equal "occurrences of modelCalled in Test-OllamaModel" 0 ([regex]::Matches($function.Extent.Text, 'modelCalled')).Count
+    }
+
+    if (-not ('HarnessEndlessResponse' -as [type])) {
+        Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Net;
+
+public class HarnessEndlessStream : Stream
+{
+    public long BytesRead;
+    public override bool CanRead { get { return true; } }
+    public override bool CanSeek { get { return false; } }
+    public override bool CanWrite { get { return false; } }
+    public override long Length { get { throw new NotSupportedException(); } }
+    public override long Position { get { throw new NotSupportedException(); } set { throw new NotSupportedException(); } }
+    public override void Flush() { }
+    public override long Seek(long offset, SeekOrigin origin) { throw new NotSupportedException(); }
+    public override void SetLength(long value) { throw new NotSupportedException(); }
+    public override void Write(byte[] buffer, int offset, int count) { throw new NotSupportedException(); }
+    public override int Read(byte[] buffer, int offset, int count)
+    {
+        // a stream that never ends; reading past 8 MB is a failure of the reader, not a hang
+        if (BytesRead > 8 * 1024 * 1024) { throw new IOException("endless stream read to its end"); }
+        for (int i = 0; i < count; i++) { buffer[offset + i] = (byte)'a'; }
+        BytesRead += count;
+        return count;
+    }
+}
+
+public class HarnessEndlessResponse : WebResponse
+{
+    public readonly HarnessEndlessStream Stream = new HarnessEndlessStream();
+    public HttpStatusCode StatusCode { get { return HttpStatusCode.InternalServerError; } }
+    public override long ContentLength { get { return -1; } set { } }
+    public override string ContentType { get { return "application/json"; } set { } }
+    public override Stream GetResponseStream() { return this.Stream; }
+}
+'@
+    }
+
+    Test-Case "AC-213 (F-23) the error body is read from the stream for at most 4096 characters: an endless stream is not read to its end" {
+        $response = New-Object HarnessEndlessResponse
+        $script:endless = $response
+        $script:rest.Handler = { param($uri) throw (New-Object System.Net.WebException -ArgumentList "endless", $null, ([System.Net.WebExceptionStatus]::ProtocolError), $script:endless) }
+        $record = & $realHttp -Request @{ Url = "http://127.0.0.1:9/api/generate"; Method = "Post"; Body = [byte[]](1); TimeoutSec = 9; Purpose = "generate" }
+        Assert-Equal "httpStatus" 500 $record.httpStatus
+        Assert-Equal "body length" 4096 $record.failure.body.Length
+        Assert-True "the stream was read for a few KB only ($($response.Stream.BytesRead) bytes)" ($response.Stream.BytesRead -lt 32768)
+        $script:endless = $null
+    }
+
     # -----------------------------------------------------------------------
     # NFR-201 / AC-217 library overhead
     # -----------------------------------------------------------------------

@@ -389,8 +389,9 @@ function Reset-AgentExecState {
 # webStatus, body }. It never reads or returns the exception message: the HTTP
 # body comes from ErrorDetails (ToString gives the body text PowerShell stored
 # there) or, when that is empty, from the response stream, at most 4096 characters.
-# Invoke-RestMethod returns only for a 2xx answer and Ollama answers 200, so the
-# status of a success is recorded as 200 (the cmdlet does not expose it).
+# Invoke-RestMethod returns only for a 2xx answer, and the cmdlet does not expose
+# the status of a success, so httpStatus of a success is $null (not measured,
+# FR-216: an empty http_status), never an assumed 200.
 function Invoke-OllamaHttp {
     param([Parameter(Mandatory = $true)][hashtable]$Request)
 
@@ -409,7 +410,7 @@ function Invoke-OllamaHttp {
         return [pscustomobject][ordered]@{
             ok         = $true
             response   = $answer
-            httpStatus = 200
+            httpStatus = $null
             failure    = $null
         }
     }
@@ -598,7 +599,7 @@ function Test-OllamaModel {
             ErrorMessage  = $detail
             TimeoutSec    = [long]$Execution.timeoutSec
         }
-        if ($null -ne $httpStatus) { $writerArguments.HttpStatus = [long]$httpStatus }
+        if ($httpStatus -is [int] -or $httpStatus -is [long]) { $writerArguments.HttpStatus = [long]$httpStatus }
         $null = Write-HarnessModelTelemetry @writerArguments
     }
 
@@ -982,7 +983,7 @@ function Invoke-AgentModel {
         if ($null -ne $Execution.timeoutSec) { $writerArguments.TimeoutSec = [long]$Execution.timeoutSec }
         if ($null -ne $responseObject) { $writerArguments.Response = $responseObject }
         if ($attempts -gt 0) { $writerArguments.Attempts = [long]$attempts }
-        if ($null -ne $httpStatus) { $writerArguments.HttpStatus = [long]$httpStatus }
+        if ($httpStatus -is [int] -or $httpStatus -is [long]) { $writerArguments.HttpStatus = [long]$httpStatus }
         if ($doneReason.Length -gt 0) { $writerArguments.DoneReason = $doneReason }
         if ($null -ne $thinkingChars) { $writerArguments.ThinkingChars = [long]$thinkingChars }
         if ($null -ne $budget -and $budget.status -cne 'skipped') {

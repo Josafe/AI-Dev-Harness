@@ -1190,10 +1190,57 @@ try {
         Assert-Equal "content type" "application/json; charset=utf-8" $call.ContentType
         Assert-True "the same bytes" ([object]::ReferenceEquals($call.Body, $bytes))
         Assert-Equal "ok" $true $record.ok
-        Assert-Equal "httpStatus" 200 $record.httpStatus
+        Assert-True "httpStatus is not measured on success (null, D2 / M-4)" ($null -eq $record.httpStatus)
         Assert-True "response is the parsed object" ([object]::ReferenceEquals($record.response, $answer))
         Assert-True "failure is null" ($null -eq $record.failure)
         Assert-Equal "record members" "ok,response,httpStatus,failure" ((@($record.PSObject.Properties | ForEach-Object { $_.Name })) -join ",")
+    }
+
+    Test-Case "AC-213 (D2 / M-4) a success through the real transport path writes an empty http_status; a non-integer injected httpStatus never throws (F-21)" {
+        $registry = New-TestRegistry
+        $script:rest.Handler = { param($uri) New-FakeGenerateResponse -Text "wire" }
+        $script:httpStub = { param($Request) & $realHttp -Request $Request }
+        $caseRoot = New-CaseRoot
+        $result = Invoke-AgentModel -Execution (Get-TestExecution $registry) -Registry $registry -System "A" -Prompt "B" -TelemetryRoot $caseRoot
+        Assert-Equal "status" "ok" $result.status
+        $record = @(Read-Records $caseRoot)[0]
+        Assert-Equal "success http_status is empty" "" $record.http_status
+        Assert-True "http_status is an empty string, not 200" ($record.http_status -is [string])
+        $csv = @(Import-Csv -LiteralPath (Join-Path $caseRoot "logs\model-calls.csv"))
+        Assert-Equal "csv http_status" "" $csv[0].http_status
+        $script:httpStub = $null
+        $script:rest.Handler = $null
+
+        foreach ($odd in @("n/a", "abc", 12.5, ([pscustomobject]@{ x = 1 }), "")) {
+            $okRecord = New-FakeOkRecord -Response (New-FakeGenerateResponse -Text "odd") -HttpStatus $odd
+            $fake = New-FakeTransport -Steps @($okRecord)
+            $caseRoot = New-CaseRoot
+            $ok = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot
+            Assert-Equal "ok with httpStatus '$odd' status" "ok" $ok.status
+            Assert-Equal "ok with httpStatus '$odd' lines" 1 (@(Read-Records $caseRoot)).Count
+            Assert-Equal "ok with httpStatus '$odd' http_status" "" (@(Read-Records $caseRoot))[0].http_status
+
+            $failRecord = New-FakeFailureRecord -WebStatus "ProtocolError" -HttpStatus $odd
+            $fake2 = New-FakeTransport -Steps @($failRecord)
+            $caseRoot2 = New-CaseRoot
+            $failed = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake2 -TelemetryRoot $caseRoot2
+            Assert-Equal "failure with httpStatus '$odd' status" "error" $failed.status
+            Assert-Equal "failure with httpStatus '$odd' lines" 1 (@(Read-Records $caseRoot2)).Count
+            Assert-Equal "failure with httpStatus '$odd' http_status" "" (@(Read-Records $caseRoot2))[0].http_status
+
+            Reset-AgentExecState
+            $tagsFake = New-FakeTransport -Steps @((New-FakeFailureRecord -WebStatus "ProtocolError" -HttpStatus $odd))
+            $caseRoot3 = New-CaseRoot
+            $tags = Test-OllamaModel -Execution (Get-TestExecution $registry) -Registry $registry -Transport $tagsFake.Transport -TelemetryRoot $caseRoot3
+            Assert-Equal "tags with httpStatus '$odd' available" $false $tags.available
+            Assert-Equal "tags with httpStatus '$odd' lines" 1 (@(Read-Records $caseRoot3)).Count
+        }
+        # an integer status is still written
+        $fake3 = New-FakeTransport -Steps @((New-FakeFailureRecord -WebStatus "ProtocolError" -HttpStatus 503))
+        $caseRoot4 = New-CaseRoot
+        $single = New-TestRegistry -MaxAttempts 1
+        Invoke-Engine -Exec (Get-TestExecution $single) -Registry $single -Fake $fake3 -TelemetryRoot $caseRoot4 | Out-Null
+        Assert-Equal "integer status written" 503 (@(Read-Records $caseRoot4))[0].http_status
     }
 
     Test-Case "AC-213 Invoke-OllamaHttp warmup uses the same call shape; tags uses only -Uri -Method -TimeoutSec" {

@@ -1050,3 +1050,102 @@ function Invoke-AgentModel {
         error  = $errorInfo
     }
 }
+
+# WP-2D1: the deprecated wrappers, relocated from config.ps1 (FR-202). They keep
+# their names and parameters and their old observable behavior, and delegate to
+# Invoke-AgentModel and Test-OllamaModel. No script of the harness calls them after
+# WP-2D. DEPRECATED: call the engine functions directly.
+
+# Deprecated. Returns the trimmed answer text (an empty string for an empty
+# answer, as before), or throws "Ollama request failed: <category>: <detail>".
+# -Config is a configuration object (v1 or v2) or a normalized registry.
+# -Execution is the record of Resolve-HarnessExecution; without it the registry
+# defaults apply and no think member is sent. A telemetry record is written only
+# when both -TelemetryAgent and -TelemetryRoot are given.
+function Invoke-HarnessGenerate {
+    param(
+        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)][string]$System,
+        [Parameter(Mandatory = $true)][string]$Prompt,
+        [Parameter(Mandatory = $true)]$Config,
+        [string]$TelemetryAgent,
+        [string]$TelemetryRoot,
+        $Execution
+    )
+
+    $registry = ConvertTo-HarnessRegistry -Config $Config
+
+    # The execution record of the engine: a given Resolve-HarnessExecution record
+    # with the model of this call, or the registry defaults without any profile (so
+    # that nothing is borrowed from a profile and no think member is sent).
+    $executionFields = [ordered]@{
+        agent                = ''
+        profile              = ''
+        model                = $Model
+        modelSource          = ''
+        parametersFrom       = ''
+        contextWindow        = $null
+        timeoutSec           = [int]$registry.defaults.timeoutSec
+        reservedOutputTokens = $null
+        options              = (Get-HarnessEffectiveOptions -Registry $registry -Profile $null)
+        think                = 'default'
+        warnings             = @()
+    }
+    if ($null -ne $Execution) {
+        foreach ($property in $Execution.PSObject.Properties) { $executionFields[$property.Name] = $property.Value }
+        $executionFields['model'] = $Model
+    }
+    $wrapperExecution = [pscustomobject]$executionFields
+
+    $callArguments = @{
+        Execution = $wrapperExecution
+        Registry  = $registry
+        System    = $System
+        Prompt    = $Prompt
+    }
+    if (-not [string]::IsNullOrWhiteSpace($TelemetryAgent) -and -not [string]::IsNullOrWhiteSpace($TelemetryRoot)) {
+        $callArguments.Agent = $TelemetryAgent
+        $callArguments.TelemetryRoot = $TelemetryRoot
+    }
+    $answer = Invoke-AgentModel @callArguments
+
+    if ($answer.status -ceq 'ok') { return $answer.text }
+    if ($answer.error.category -ceq 'empty_response' -or $answer.error.category -ceq 'thinking_budget_exhausted') { return '' }
+    throw "Ollama request failed: $($answer.error.category): $($answer.error.detail)"
+}
+
+# Deprecated. Prints the legacy lines and returns the legacy problem string when
+# Ollama is not reachable or the model is not installed (exact name,
+# case-insensitive); prints and returns nothing when the model is available.
+# Sends no generation request. Any failure of /api/tags, whatever its category,
+# gives the legacy "not reachable" line.
+function Test-HarnessModelAvailable {
+    param(
+        [Parameter(Mandatory = $true)][string]$Model,
+        [Parameter(Mandatory = $true)]$Config
+    )
+
+    $registry = ConvertTo-HarnessRegistry -Config $Config
+    $ollamaUrl = ([string]$registry.ollama.url).TrimEnd('/')
+    $wrapperExecution = [pscustomobject][ordered]@{
+        agent       = ''
+        profile     = ''
+        model       = $Model
+        modelSource = ''
+        timeoutSec  = [int]$registry.defaults.timeoutSec
+    }
+
+    $check = Test-OllamaModel -Execution $wrapperExecution -Registry $registry
+    if ($check.available) { return }
+
+    if ($check.category -ceq 'model_not_installed') {
+        Write-Host "Model not found: $Model" -ForegroundColor Red
+        Write-Host "Available models:" -ForegroundColor Yellow
+        foreach ($m in @($check.models)) { Write-Host "  - $m" }
+        return "The requested Ollama model is not installed. Try: ollama pull $Model"
+    }
+
+    $problem = "Ollama is not reachable at $ollamaUrl. Make sure Ollama is running."
+    Write-Host $problem -ForegroundColor Red
+    return $problem
+}

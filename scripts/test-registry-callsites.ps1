@@ -717,7 +717,9 @@ try {
         Assert-Equal "model" "test-model-alpha" $generate[0].model
         Assert-Equal "timeout" 222 $generate[0].timeoutSec
         Assert-Equal "options" "num_ctx=8192;temperature=0.2" $generate[0].optionsPairs
-        Assert-Equal "think member" "False" $generate[0].hasThink
+        Assert-Equal "think member" "True" $generate[0].hasThink
+        Assert-Equal "think value" "True" $generate[0].thinkValue
+        Assert-True "think value is a JSON boolean" ($generate[0].thinkValue -is [bool])
         $run = Invoke-Script -Script "run-agent" -ConfigText $v2Valid -Extra @{ Profile = "beta" } -TagModels @("test-model-beta")
         Assert-Guards $run
         Assert-Equal "exit code with -Profile" 0 $run.ExitCode

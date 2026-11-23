@@ -156,3 +156,101 @@ function New-SpecRevisePrompt {
         parts  = @($system.breakdown) + @($prompt.breakdown)
     }
 }
+
+# WP-2B1: context budget (FR-209, XR-03). Pure arithmetic, never changes a prompt.
+#   C = contextWindow, R = reservedOutputTokens, S = ceil(safetyMarginRatio x C),
+#   E = ceil((len(system) + len(prompt)) / charsPerToken).
+# The budget holds when E + R + S <= C. All arithmetic is [decimal] with
+# [math]::Ceiling (Phase 1 hardening F-01). status is ok, exceeded or skipped;
+# skipped (no contextWindow or no reservedOutputTokens, every v1 configuration)
+# reports nothing. enforce and warn are not distinguished here: the mode is read
+# by the caller (Invoke-AgentModel). -Parts takes parts (Name, Kind, Text) or
+# breakdown entries (name, kind, chars), as New-AgentPrompt and the builders return them.
+function Test-AgentContextBudget {
+    param(
+        [Parameter(Mandatory = $true)]$Execution,
+        [Parameter(Mandatory = $true)]$Registry,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$System,
+        [Parameter(Mandatory = $true)][AllowEmptyString()][string]$Prompt,
+        [AllowNull()][object[]]$Parts
+    )
+
+    foreach ($member in @('contextWindow', 'reservedOutputTokens')) {
+        if ($null -eq $Execution -or $null -eq $Execution.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Execution must be a record of Resolve-HarnessExecution (no '$member')."
+        }
+    }
+    if ($null -eq $Registry -or $null -eq $Registry.defaults -or
+        $null -eq $Registry.defaults.PSObject.Properties['safetyMarginRatio'] -or
+        $null -eq $Registry.defaults.PSObject.Properties['charsPerToken']) {
+        throw "invalid_arguments: -Registry must be a normalized registry (defaults.safetyMarginRatio and defaults.charsPerToken)."
+    }
+
+    $window = $Execution.contextWindow
+    $reserved = $Execution.reservedOutputTokens
+    if ($null -eq $window -or $null -eq $reserved) {
+        return [pscustomobject][ordered]@{
+            status        = 'skipped'
+            contextWindow = $null
+            reserved      = $null
+            margin        = $null
+            estTokens     = $null
+            available     = $null
+            over          = $null
+            sections      = @()
+        }
+    }
+
+    $charsPerToken = [decimal]$Registry.defaults.charsPerToken
+    $c = [decimal]$window
+    $r = [decimal]$reserved
+    $s = [math]::Ceiling([decimal]$Registry.defaults.safetyMarginRatio * $c)
+    $e = [math]::Ceiling([decimal]($System.Length + $Prompt.Length) / $charsPerToken)
+    $available = $c - $r - $s
+
+    $status = 'exceeded'
+    if ($e + $r + $s -le $c) { $status = 'ok' }
+    $over = [decimal]0
+    if ($e -gt $available) { $over = $e - $available }
+
+    $sections = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($part in @($Parts)) {
+        if ($null -eq $part) { continue }
+        $chars = 0
+        if ($null -ne $part.PSObject.Properties['chars']) { $chars = [long]$part.chars }
+        elseif ($null -ne $part.PSObject.Properties['Text']) { $chars = ([string]$part.Text).Length }
+        $sections.Add([pscustomobject][ordered]@{
+                name      = [string]$part.Name
+                kind      = [string]$part.Kind
+                chars     = [long]$chars
+                estTokens = [long][math]::Ceiling([decimal]$chars / $charsPerToken)
+            })
+    }
+
+    return [pscustomobject][ordered]@{
+        status        = $status
+        contextWindow = [long]$c
+        reserved      = [long]$r
+        margin        = [long]$s
+        estTokens     = [long]$e
+        available     = [long]$available
+        over          = [long]$over
+        sections      = $sections.ToArray()
+    }
+}
+
+# WP-2B1: seconds to wait before attempt k + 1 (FR-212): BackoffSec x 2^(k-1),
+# capped at 60. Pure: the values are arguments, nothing is read and nothing sleeps.
+function Get-AgentRetryDelaySec {
+    param(
+        [Parameter(Mandatory = $true)][ValidateRange(1, [int]::MaxValue)][int]$Attempt,
+        [Parameter(Mandatory = $true)][ValidateRange(0, [int]::MaxValue)][int]$BackoffSec
+    )
+
+    $delay = [long]$BackoffSec
+    for ($step = 1; $step -lt $Attempt -and $delay -gt 0 -and $delay -lt 60; $step++) {
+        $delay = $delay * 2
+    }
+    if ($delay -gt 60) { $delay = 60 }
+    return [int]$delay
+}

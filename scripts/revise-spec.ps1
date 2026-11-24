@@ -32,6 +32,7 @@ foreach ($required in @(
 
 . (Join-Path $PSScriptRoot "lib\config.ps1")
 . (Join-Path $PSScriptRoot "lib\telemetry.ps1")
+. (Join-Path $PSScriptRoot "lib\agent-exec.ps1")
 
 $config = Get-HarnessRegistry -ConfigPath $configFile
 
@@ -44,6 +45,9 @@ $Model = "$($execution.model)".Trim()
 if ([string]::IsNullOrWhiteSpace($Model)) {
     throw "Model name cannot be empty."
 }
+
+# The engine and the availability check read the model from the execution record.
+$execution.model = $Model
 
 $specContent         = Get-Content $SpecFile -Raw -Encoding UTF8
 $reviewContent       = Get-Content $ReviewFile -Raw -Encoding UTF8
@@ -62,109 +66,93 @@ Write-Host "Spec  : $SpecFile"
 Write-Host "Review: $ReviewFile"
 Write-Host ""
 
-$systemPrompt = @"
-You are the Specification Reviser Agent operating inside the AI Development Harness.
+$built = New-SpecRevisePrompt `
+    -ProjectInstructions ([string]$projectInstructions) `
+    -AgentContract ([string]$agentContract) `
+    -AgentInstructions ([string]$agentInstructions) `
+    -Mode ([string]$Mode) `
+    -Task ([string]$Task) `
+    -Specification ([string]$specContent) `
+    -Review ([string]$reviewContent)
 
-PROJECT INSTRUCTIONS:
-$projectInstructions
-
-AGENT CONTRACT:
-$agentContract
-
-AGENT ROLE:
-$agentInstructions
-
-SPECIFICATION MODE (AUTHORITATIVE):
-$Mode
-
-ORIGINAL USER REQUEST:
-$Task
-
-CURRENT SPECIFICATION:
-$specContent
-
-SPECIFICATION REVIEW:
-$reviewContent
-
-Revise the specification according to the reviewer findings.
-
-This is a MINIMAL REVISION, not a rewrite. Your task is ONLY to remove or
-correct unsupported content identified by the reviewer. It is NOT to make the
-specification more complete.
-
-Rules, in order:
-
-1. Start from the CURRENT SPECIFICATION.
-2. Preserve every requirement directly supported by the ORIGINAL USER REQUEST.
-3. Remove or correct every unsupported item identified by the REVIEW.
-4. Do not replace removed items with new ones.
-5. Do not invent requirements, edge cases, open questions, assumptions,
-   dependencies, security or validation rules, UI behavior, error handling,
-   implementation details, architecture decisions, or facts about the
-   existing system. Use only context supported by the supplied input.
-6. Apply the acceptance-criteria rules for the authoritative specification mode:
-   - requirements: retain or revise criteria only when supported by
-     requested behavior. Do not force criteria when none are supported
-     or necessary.
-   - baseline: include criteria only for behavior explicitly authorized
-     for preservation. Do not turn unrelated implementation details
-     into criteria.
-   - documentation: do not create acceptance criteria to verify
-     descriptive implementation facts. Use None when no independent
-     requirement needs acceptance criteria.
-   - mixed requests: criteria may cover explicit requested changes and
-     explicitly authorized preservation only.
-7. Every requirement must have a Source of USER, PROJECT, FACT or ASSUMPTION.
-
-The output MUST contain exactly these headings, in this order:
-
-# Specification
-## Goal
-## Context
-## Functional Requirements
-## Non-Functional Requirements
-## Acceptance Criteria
-## Edge Cases
-## Dependencies
-## Open Questions
-## Assumptions
-
-If a section has no supported content, write exactly: None
-
-Before answering, verify that all 10 headings are present and that nothing
-unsupported or new was introduced.
-
-Verify that Functional Requirements, Non-Functional Requirements and
-Acceptance Criteria contain only entries justified by the authoritative
-specification mode and supplied evidence.
-
-Do not require FR-XXX, NFR-XXX or AC-XXX entries when the selected mode and
-available evidence do not support them. Write None for empty sections.
-
-Return ONLY the complete revised specification.
-"@
+$ollamaUrl = ([string]$config.ollama.url).TrimEnd('/')
 
 # FR-010: no generation request unless Ollama is reachable and the model installed.
-$availabilityProblem = Test-HarnessModelAvailable -Model $Model -Config $config
-if ($availabilityProblem) {
+# Test-OllamaModel prints nothing; this script prints the legacy lines. A failed
+# check writes the one telemetry record of the call (model_called false).
+$availability = Test-OllamaModel `
+    -Execution $execution `
+    -Registry $config `
+    -TelemetryRoot $root `
+    -Agent "spec-reviser"
+
+if (-not $availability.available) {
+    if ($availability.category -ceq 'model_not_installed') {
+        Write-Host "Model not found: $Model" -ForegroundColor Red
+        Write-Host "Available models:" -ForegroundColor Yellow
+        foreach ($m in @($availability.models)) { Write-Host "  - $m" }
+        $availabilityProblem = "The requested Ollama model is not installed. Try: ollama pull $Model"
+    }
+    else {
+        # Any failure of /api/tags (timeout, refused, 5xx...) keeps the legacy line.
+        $availabilityProblem = "Ollama is not reachable at $ollamaUrl. Make sure Ollama is running."
+        Write-Host $availabilityProblem -ForegroundColor Red
+    }
+    Write-Host "Category: $($availability.category)" -ForegroundColor Red
+    if (-not [string]::IsNullOrWhiteSpace($availability.hint)) { Write-Host "Hint: $($availability.hint)" -ForegroundColor Yellow }
     throw $availabilityProblem
 }
 
 Write-Host "Sending specification to reviser..." -ForegroundColor Yellow
 Write-Host ""
 
-$revision = Invoke-HarnessGenerate `
-    -Model $Model `
-    -System $systemPrompt `
-    -Prompt "Revise the specification according to the original request and review findings." `
-    -Config $config `
-    -Execution $execution `
-    -TelemetryAgent "spec-reviser" `
-    -TelemetryRoot $root
-
-if ([string]::IsNullOrWhiteSpace($revision)) {
-    throw "Reviser returned an empty response."
+# One line before each retry wait, so that a retry never looks like a hang. The
+# hook uses only its parameters (see the hook rule in lib\agent-exec.ps1).
+$retryNotice = {
+    param($NextAttempt, $MaxAttempts, $RetryCategory, $WaitSeconds)
+    Write-Host "Retrying (attempt $NextAttempt of $MaxAttempts) after $RetryCategory, waiting $WaitSeconds s." -ForegroundColor Yellow
 }
+
+$call = Invoke-AgentModel `
+    -Execution $execution `
+    -Registry $config `
+    -System $built.system `
+    -Prompt $built.prompt `
+    -Parts $built.parts `
+    -Agent "spec-reviser" `
+    -TelemetryRoot $root `
+    -OnRetry $retryNotice
+
+# budgetMode warn (the default): the prompt was sent, the overflow is not silent.
+if (@($call.meta.warnings) -ccontains 'budget_exceeded') {
+    Write-Host "Warning: budget_exceeded (estimated $($call.meta.budget.estTokens) tokens, available $($call.meta.budget.available))." -ForegroundColor Yellow
+}
+
+if ($call.status -ne 'ok') {
+    $failure = $call.error
+
+    if ($failure.category -ceq 'empty_response' -or $failure.category -ceq 'thinking_budget_exhausted') {
+        Write-Host "Category: $($failure.category)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+        throw "Reviser returned an empty response."
+    }
+
+    if ($failure.category -ceq 'context_budget_exceeded') {
+        Write-Host "Category: $($failure.category)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+        Write-Host "Estimated $($call.meta.budget.estTokens) tokens, available $($call.meta.budget.available)." -ForegroundColor Yellow
+        foreach ($section in @($call.meta.budget.sections)) {
+            Write-Host "  $($section.name) ($($section.kind)): $($section.chars) characters, about $($section.estTokens) tokens" -ForegroundColor Yellow
+        }
+        throw "Agent execution failed."
+    }
+
+    Write-Host "Category: $($failure.category)" -ForegroundColor Red
+    if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+    throw "Ollama request failed: $($failure.category): $($failure.detail)"
+}
+
+$revision = $call.text
 
 if (-not [string]::IsNullOrWhiteSpace($OutputFile)) {
     [System.IO.File]::WriteAllText(

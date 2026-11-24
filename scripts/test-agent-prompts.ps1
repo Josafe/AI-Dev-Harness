@@ -145,7 +145,11 @@ try {
             "Write-Host", "Write-Output", "Write-Warning", "Write-Error", "New-Object System.Net.WebClient")
         foreach ($command in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
             $name = [string]$command.GetCommandName()
-            if ($forbiddenCommands -contains $name) { $problems += "forbidden command: $name" }
+            # WP-2D2: the deprecated Test-HarnessModelAvailable prints the legacy lines (FR-202); no other function may print.
+            $owningFunction = $command.Parent
+            while ($null -ne $owningFunction -and -not ($owningFunction -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owningFunction = $owningFunction.Parent }
+            $deprecatedPrinter = ($name -ieq "Write-Host" -and $null -ne $owningFunction -and $owningFunction.Name -ceq "Test-HarnessModelAvailable")
+            if ($forbiddenCommands -contains $name -and -not $deprecatedPrinter) { $problems += "forbidden command: $name" }
             # WP-2C (AC-218): one Invoke-RestMethod call is allowed, and only inside Invoke-OllamaHttp.
             if ($name -ieq "Invoke-RestMethod") {
                 $owner = $command.Parent

@@ -32,6 +32,7 @@ foreach ($required in @(
 try {
     . (Join-Path $PSScriptRoot "lib\config.ps1")
     . (Join-Path $PSScriptRoot "lib\telemetry.ps1")
+    . (Join-Path $PSScriptRoot "lib\agent-exec.ps1")
 
     $config = Get-HarnessRegistry -ConfigPath $configFile
 
@@ -44,6 +45,9 @@ try {
     if ([string]::IsNullOrWhiteSpace($Model)) {
         throw "Model name cannot be empty."
     }
+
+    # The engine and the availability check read the model from the execution record.
+    $execution.model = $Model
 
     $specContent         = Get-Content $SpecFile -Raw -Encoding UTF8
     $agentInstructions   = Get-Content $agentFile -Raw -Encoding UTF8
@@ -68,64 +72,69 @@ Write-Host "Model : $Model"
 Write-Host "Spec  : $SpecFile"
 Write-Host ""
 
-$systemPrompt = @"
-You are the Specification Reviewer Agent operating inside the AI Development Harness.
+$built = New-SpecReviewPrompt `
+    -ProjectInstructions ([string]$projectInstructions) `
+    -AgentContract ([string]$agentContract) `
+    -AgentInstructions ([string]$agentInstructions) `
+    -Mode ([string]$Mode) `
+    -Task ([string]$Task) `
+    -Specification ([string]$specContent)
 
-PROJECT INSTRUCTIONS:
-$projectInstructions
-
-AGENT CONTRACT:
-$agentContract
-
-AGENT ROLE:
-$agentInstructions
-
-IMPORTANT REVIEW INPUT:
-
-SPECIFICATION MODE (AUTHORITATIVE):
-$Mode
-
-ORIGINAL USER REQUEST:
-$Task
-
-GENERATED SPECIFICATION:
-$specContent
-
-Review the generated specification against the original user request.
-
-Do not modify the specification.
-
-Do not implement code.
-
-Do not invent additional requirements.
-
-Identify unsupported or misclassified requirements.
-
-Pay particular attention to requirements incorrectly marked as Source: USER.
-
-Follow the reviewer output format exactly.
-
-Do not claim PASS without actually reviewing the specification.
-"@
+$ollamaUrl = ([string]$config.ollama.url).TrimEnd('/')
 
 # FR-010: no generation request unless Ollama is reachable and the model installed.
-$availabilityProblem = Test-HarnessModelAvailable -Model $Model -Config $config
-if ($availabilityProblem) {
+# Test-OllamaModel prints nothing; this script prints the legacy lines. A failed
+# check writes the one telemetry record of the call (model_called false).
+$availability = Test-OllamaModel `
+    -Execution $execution `
+    -Registry $config `
+    -TelemetryRoot $root `
+    -Agent "spec-reviewer"
+
+if (-not $availability.available) {
+    if ($availability.category -ceq 'model_not_installed') {
+        Write-Host "Model not found: $Model" -ForegroundColor Red
+        Write-Host "Available models:" -ForegroundColor Yellow
+        foreach ($m in @($availability.models)) { Write-Host "  - $m" }
+    }
+    else {
+        # Any failure of /api/tags (timeout, refused, 5xx...) keeps the legacy line.
+        Write-Host "Ollama is not reachable at $ollamaUrl. Make sure Ollama is running." -ForegroundColor Red
+    }
+    Write-Host "Category: $($availability.category)" -ForegroundColor Red
+    if (-not [string]::IsNullOrWhiteSpace($availability.hint)) { Write-Host "Hint: $($availability.hint)" -ForegroundColor Yellow }
     exit 2
 }
 
 Write-Host "Sending specification to reviewer..." -ForegroundColor Yellow
 Write-Host ""
 
+# One line before each retry wait, so that a retry never looks like a hang. The
+# hook uses only its parameters (see the hook rule in lib\agent-exec.ps1).
+$retryNotice = {
+    param($NextAttempt, $MaxAttempts, $RetryCategory, $WaitSeconds)
+    Write-Host "Retrying (attempt $NextAttempt of $MaxAttempts) after $RetryCategory, waiting $WaitSeconds s." -ForegroundColor Yellow
+}
+
+# The reviewer output format check. It returns a code when the answer has no
+# valid Status section (the engine then reports format_invalid, which is not
+# retried) and nothing when it is acceptable. It uses only its parameter.
+$statusCheck = {
+    param($ReviewText)
+    if (-not [regex]::IsMatch($ReviewText, '(?im)^##\s+Status\s*\r?\n\s*(PASS|FAIL)\s*$')) { 'status_missing' }
+}
+
 try {
-    $review = Invoke-HarnessGenerate `
-        -Model $Model `
-        -System $systemPrompt `
-        -Prompt "Review the specification according to your assigned role." `
-        -Config $config `
+    $call = Invoke-AgentModel `
         -Execution $execution `
-        -TelemetryAgent "spec-reviewer" `
-        -TelemetryRoot $root
+        -Registry $config `
+        -System $built.system `
+        -Prompt $built.prompt `
+        -Parts $built.parts `
+        -Agent "spec-reviewer" `
+        -TelemetryRoot $root `
+        -ResponseCheck $statusCheck `
+        -OnRetry $retryNotice
 }
 catch {
     Write-Host "=== OLLAMA ERROR ===" -ForegroundColor Red
@@ -133,28 +142,59 @@ catch {
     exit 2
 }
 
-if ([string]::IsNullOrWhiteSpace($review)) {
-    Write-Host "=== REVIEWER OUTPUT ERROR ===" -ForegroundColor Red
-    Write-Host "Reviewer returned an empty response." -ForegroundColor Red
+# budgetMode warn (the default): the prompt was sent, the overflow is not silent.
+if (@($call.meta.warnings) -ccontains 'budget_exceeded') {
+    Write-Host "Warning: budget_exceeded (estimated $($call.meta.budget.estTokens) tokens, available $($call.meta.budget.available))." -ForegroundColor Yellow
+}
+
+if ($call.status -ne 'ok') {
+    $failure = $call.error
+
+    if ($failure.category -ceq 'empty_response' -or $failure.category -ceq 'thinking_budget_exhausted') {
+        Write-Host "=== REVIEWER OUTPUT ERROR ===" -ForegroundColor Red
+        Write-Host "Reviewer returned an empty response." -ForegroundColor Red
+        Write-Host "Category: $($failure.category)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+        exit 2
+    }
+
+    if ($failure.category -ceq 'format_invalid') {
+        Write-Host "=== REVIEW VALIDATION ERROR ===" -ForegroundColor Red
+        Write-Host "Reviewer did not return a valid Status section." -ForegroundColor Red
+        Write-Host ""
+        Write-Host "Expected:"
+        Write-Host ""
+        Write-Host "## Status"
+        Write-Host "PASS or FAIL"
+        Write-Host "Category: $($failure.category)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+        exit 2
+    }
+
+    if ($failure.category -ceq 'context_budget_exceeded') {
+        Write-Host "Category: $($failure.category)" -ForegroundColor Red
+        if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
+        Write-Host "Estimated $($call.meta.budget.estTokens) tokens, available $($call.meta.budget.available)." -ForegroundColor Yellow
+        foreach ($section in @($call.meta.budget.sections)) {
+            Write-Host "  $($section.name) ($($section.kind)): $($section.chars) characters, about $($section.estTokens) tokens" -ForegroundColor Yellow
+        }
+        Write-Host "Agent execution failed." -ForegroundColor Red
+        exit 2
+    }
+
+    Write-Host "=== OLLAMA ERROR ===" -ForegroundColor Red
+    Write-Host "Ollama request failed: $($failure.category): $($failure.detail)" -ForegroundColor Yellow
+    Write-Host "Category: $($failure.category)" -ForegroundColor Red
+    if (-not [string]::IsNullOrWhiteSpace($failure.hint)) { Write-Host "Hint: $($failure.hint)" -ForegroundColor Yellow }
     exit 2
 }
+
+$review = $call.text
 
 $statusMatch = [regex]::Match(
     $review,
     '(?im)^##\s+Status\s*\r?\n\s*(PASS|FAIL)\s*$'
 )
-
-if (-not $statusMatch.Success) {
-    Write-Host "=== REVIEW VALIDATION ERROR ===" -ForegroundColor Red
-    Write-Host "Reviewer did not return a valid Status section." -ForegroundColor Red
-    Write-Host ""
-    Write-Host "Expected:"
-    Write-Host ""
-    Write-Host "## Status"
-    Write-Host "PASS or FAIL"
-    exit 2
-}
-
 $status = $statusMatch.Groups[1].Value.ToUpperInvariant()
 
 if (-not [string]::IsNullOrWhiteSpace($OutputFile)) {

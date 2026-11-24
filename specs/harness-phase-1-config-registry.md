@@ -1,7 +1,7 @@
 # Specification
 
 **Title:** Harness modernization, Phase 1: configuration registry v2
-**Status:** Implemented (2026-11-21), revision 3. Phase 1 is merged and tagged `phase1-done`; offline verification passed (final QA: `docs/audits/2026-11-20-phase1-final-qa.md`). Live behavior with a real model is NOT VERIFIED. Revision 3 adds the validation of `ollama.healthTimeoutSec` and `ollama.url` (FR-103, AC-114) and states two existing behaviors (FR-103 `schemaVersion`, FR-104 rule 2). OQ-101 to OQ-106 are resolved (OD-106 to OD-111) and the profile assignment is decided (OD-112); there are no open questions.
+**Status:** Implemented (2026-11-21), revision 3. Phase 1 is merged and tagged `phase1-done`; offline verification passed (final QA: `docs/audits/2026-11-20-phase1-final-qa.md`). Live behavior with a real model is NOT VERIFIED. Revision 3 adds the validation of `ollama.healthTimeoutSec` and `ollama.url` (FR-103, AC-114) and states two existing behaviors (FR-103 `schemaVersion`, FR-104 rule 2). OQ-101 to OQ-106 are resolved (OD-106 to OD-111) and the profile assignment is decided (OD-112); there are no open questions. **Note (2026-11-24, Phase 2 spec revision 3.3, WP-2D2): FR-108 and AC-109 are superseded by Phase 2 FR-214 and AC-210** (`specs/harness-phase-2-shared-engine.md`): a request has a `think` member when the resolved profile sets `true` or `false`; this text is kept as the record of Phase 1.
 **Applies to:** AI-Dev-Harness. Baseline: commit `5ffc33f` (tag `phase0-done`).
 **Requirement ID scheme:** Phase 1 uses `FR-1nn`, `NFR-1nn`, `AC-1nn`. Phase 0 IDs are cited as "Phase 0 NFR-006" and similar (`specs/harness-phase-0-defect-corrections.md`).
 
@@ -158,6 +158,8 @@ No file in `scripts/` (including `scripts/lib/`) contains a model name. The defa
 
 The loader keeps `think` (`true`, `false` or `"default"`, normalized to `"default"` when absent) in the profile and in the resolved record. No script sends `think` to Ollama or changes behavior because of it in Phase 1. Phase 2 uses it.
 
+**Superseded by Phase 2 FR-214 (revision 3.3, WP-2D2).** Since Phase 2 the request has a `think` member when the resolved profile's `think` is the boolean `true` or `false`; `"default"`, absent and v1 configurations send none. The text above is the Phase 1 record.
+
 ## Non-Functional Requirements
 
 ### NFR-101 — Platform and dependencies
@@ -268,6 +270,8 @@ A registry helper returns the distinct profile models in profile order (checked 
 Verifies: FR-108, FR-106.
 
 The record carries `think` for each fixture value (`true`, `false`, `"default"`, absent). Inspection: the request bodies built by `Invoke-HarnessGenerate` and `run-agent.ps1` have no `think` member, and no changed script reads `think` for anything but copying it into the record.
+
+**Superseded by Phase 2 AC-210 (revision 3.3, WP-2D2).** The inspection of the request bodies no longer holds: the requests of `review-spec.ps1`, `revise-spec.ps1` and `run-agent.ps1` carry `think` for a profile that sets it (AC-210, and the `test-registry-callsites.ps1` rows of Phase 2 AC-218). The record part of this criterion still holds.
 
 ### AC-110 — The live-suite model resolves like production
 

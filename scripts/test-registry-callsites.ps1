@@ -661,7 +661,7 @@ try {
         Assert-Equal "telemetry lines" 1 $run.TelemetryLines
     }
 
-    Test-Case "review-spec -Profile alpha: profile parameters, num_ctx from contextWindow, think never sent" {
+    Test-Case "review-spec -Profile alpha: profile parameters, num_ctx from contextWindow, think sent as true" {
         $run = Invoke-Script -Script "review-spec" -ConfigText $v2Valid -Extra @{ Profile = "alpha" } -TagModels @("test-model-alpha")
         Assert-Guards $run
         Assert-Equal "exit code" 0 $run.ExitCode
@@ -669,7 +669,9 @@ try {
         Assert-Equal "model" "test-model-alpha" $generate[0].model
         Assert-Equal "timeout" 222 $generate[0].timeoutSec
         Assert-Equal "options" "num_ctx=8192;temperature=0.2" $generate[0].optionsPairs
-        Assert-Equal "think member (the profile has think true)" "False" $generate[0].hasThink
+        Assert-Equal "think member (the profile has think true)" "True" $generate[0].hasThink
+        Assert-Equal "think value" "True" $generate[0].thinkValue
+        Assert-True "think value is a JSON boolean" ($generate[0].thinkValue -is [bool])
     }
 
     Test-Case "review-spec -Model of a registered profile takes that profile's parameters" {

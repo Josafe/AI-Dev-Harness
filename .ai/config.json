@@ -2,7 +2,10 @@
   "schemaVersion": 2,
   "ollama": {
     "url": "http://localhost:11434",
-    "healthTimeoutSec": 15
+    "healthTimeoutSec": 15,
+    "maxAttempts": 2,
+    "retryBackoffSec": 5,
+    "warmup": false
   },
   "defaults": {
     "profile": "fast",
@@ -10,6 +13,7 @@
       "temperature": 0.2
     },
     "safetyMarginRatio": 0.10,
+    "charsPerToken": 3.5,
     "stripThinking": true
   },
   "profiles": {

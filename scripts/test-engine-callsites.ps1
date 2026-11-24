@@ -1851,6 +1851,140 @@ try {
 
     # -----------------------------------------------------------------------
     Write-Host ""
+    Write-Host "=== Final QA N-14, N-15: the Warning line, the line order of a failure block, the hint of each category ===" -ForegroundColor Cyan
+
+    # Closing round of the Phase 2 final QA: cases added only; no existing assertion
+    # was edited. A hint is pinned by one phrase of the harness's own fixed wording
+    # that names its category, on the line right after the Category line (NFR-202).
+
+    # The lines of Expected appear consecutively, in this order. An item is an exact
+    # line or @{ Prefix = ...; Contains = ... }.
+    function Assert-LineBlock {
+        param($Run, [object[]]$Expected)
+
+        $all = @($Run.Lines)
+        $isMatch = {
+            param($Line, $Item)
+            if ($Item -is [hashtable]) { return ($Line.StartsWith($Item.Prefix, [System.StringComparison]::Ordinal) -and $Line.Contains($Item.Contains)) }
+            return ($Line -ceq $Item)
+        }
+        for ($start = 0; $start -le $all.Count - $Expected.Count; $start++) {
+            $ok = $true
+            for ($k = 0; $k -lt $Expected.Count; $k++) {
+                if (-not (& $isMatch $all[$start + $k] $Expected[$k])) { $ok = $false; break }
+            }
+            if ($ok) { return }
+        }
+        throw "no block of consecutive lines in this order: " + (($Expected | ForEach-Object { if ($_ -is [hashtable]) { $_.Prefix + "..." + $_.Contains + "..." } else { "'" + $_ + "'" } }) -join " | ") + " -- the lines were: " + ($all -join " | ")
+    }
+
+    function Assert-CategoryHint {
+        param($Run, [string]$Category, [string]$Phrase)
+        Assert-LineBlock $Run @("Category: $Category", @{ Prefix = "Hint: "; Contains = $Phrase })
+    }
+
+    foreach ($warnOnly in @(
+            @{ Key = "run"; Script = "run-agent.ps1"; Answer = "Partial answer."; Agent = "spec" },
+            @{ Key = "review"; Script = "review-spec.ps1"; Answer = $reviewPass; Agent = "spec-reviewer" },
+            @{ Key = "revise"; Script = "revise-spec.ps1"; Answer = $revisedSpec; Agent = "spec-reviser" })) {
+        Test-Case "N-14 $($warnOnly.Script) a warning other than budget_exceeded (output_truncated) prints no Warning line; exit 0, the record carries the warning" {
+            $run = Invoke-Case -Name "n14-$($warnOnly.Key)-truncated" -ConfigText (New-V2Config) -Script $warnOnly.Script -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "ok" @{ response = $warnOnly.Answer; doneReason = "length" }))
+            Assert-Guards $run
+            Assert-Equal "exit code" 0 $run.ExitCode
+            Assert-Equal "generate calls" 1 (@(Get-Generations $run).Count)
+            Assert-NoLine $run "Warning:"
+            Assert-NoLine $run "Category:"
+            Assert-Equal "output file" $warnOnly.Answer $run.Output
+            Assert-OneRecord $run "success" "" $true -Agent $warnOnly.Agent
+            Assert-Equal "warnings column" "output_truncated" $run.Telemetry[0].warnings
+        }
+    }
+
+    Test-Case "N-15 run-agent failure block: the lines are consecutive in the order OLLAMA ERROR, Status, detail, Category, Hint, END" {
+        $run = Invoke-Case -Name "n15-run-500" -ConfigText $matrixConfig -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "http" @{ status = 500; body = '{"error":"boom from the fake server"}' })) -RepeatLastGenerate -TypedExceptions
+        Assert-Guards $run
+        Assert-Equal "exit code" 1 $run.ExitCode
+        Assert-LineBlock $run @("=== OLLAMA ERROR ===", "Status: 500", "boom from the fake server", "Category: http_5xx", @{ Prefix = "Hint: "; Contains = "GPU or CUDA" }, "=== END OLLAMA ERROR ===")
+    }
+
+    Test-Case "N-15 run-agent a failure without an HTTP status: no Status line, the block is OLLAMA ERROR, detail, Category, Hint, END" {
+        $run = Invoke-Case -Name "n15-run-timeout" -ConfigText $matrixConfig -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "status" @{ webStatus = "Timeout" })) -TypedExceptions
+        Assert-Guards $run
+        Assert-LineBlock $run @("=== OLLAMA ERROR ===", @{ Prefix = "System.Net.WebException"; Contains = "Timeout" }, "Category: timeout", @{ Prefix = "Hint: "; Contains = "timeoutSec" }, "=== END OLLAMA ERROR ===")
+    }
+
+    Test-Case "N-15 run-agent budget refusal: Category, Hint, the Estimated line, then the section lines" {
+        $run = Invoke-Case -Name "n15-run-budget" -ConfigText $tinyEnforce -TaskFile $bigTask -TagsSteps $tagsAlpha -GenerateSteps @((& $okReply "never sent"))
+        Assert-Guards $run
+        Assert-LineBlock $run @("Category: context_budget_exceeded", @{ Prefix = "Hint: "; Contains = "does not fit the context budget" }, @{ Prefix = "Estimated "; Contains = " tokens, available 800." }, @{ Prefix = "  "; Contains = " characters, about " })
+    }
+
+    foreach ($hintCase in @(
+            @{ Name = "reset"; Steps = @((New-Step "status" @{ webStatus = "ReceiveFailure" })); Repeat = $true; Typed = $true; Tags = $tagsAlpha; Category = "transport_reset"; Phrase = "dropped" },
+            @{ Name = "4xx"; Steps = @((New-Step "http" @{ status = 400; body = '{"error":"bad"}' })); Repeat = $false; Typed = $true; Tags = $tagsAlpha; Category = "http_4xx"; Phrase = "Ollama rejected the request" },
+            @{ Name = "empty"; Steps = @((New-Step "ok" @{ response = " "; doneReason = "stop" })); Repeat = $false; Typed = $false; Tags = $tagsAlpha; Category = "empty_response"; Phrase = "empty answer" },
+            @{ Name = "exhausted"; Steps = @((New-Step "ok" @{ response = ""; doneReason = "length" })); Repeat = $false; Typed = $false; Tags = $tagsAlpha; Category = "thinking_budget_exhausted"; Phrase = "reasoning" },
+            @{ Name = "other"; Steps = @((New-Step "plain")); Repeat = $false; Typed = $false; Tags = $tagsAlpha; Category = "transport_other"; Phrase = "does not classify" },
+            @{ Name = "unreachable"; Steps = @(); Repeat = $false; Typed = $true; Tags = @((New-Step "status" @{ webStatus = "ConnectFailure" })); Category = "transport_unreachable"; Phrase = "Ollama server is running" },
+            @{ Name = "tags-timeout"; Steps = @(); Repeat = $false; Typed = $true; Tags = @((New-Step "status" @{ webStatus = "Timeout" })); Category = "timeout"; Phrase = "timeoutSec" },
+            @{ Name = "not-installed"; Steps = @(); Repeat = $false; Typed = $false; Tags = @((New-Step "ok" @{ models = @("other-model") })); Category = "model_not_installed"; Phrase = "ollama pull" })) {
+        foreach ($target in @(
+                @{ Key = "run"; Script = "run-agent.ps1" },
+                @{ Key = "review"; Script = "review-spec.ps1" },
+                @{ Key = "revise"; Script = "revise-spec.ps1" })) {
+            # the availability hints (unreachable, tags timeout, not installed) are
+            # printed by every script; the generation hints are pinned for run-agent
+            # here and for the other two below and in the failure-block cases
+            $generationOnly = ($hintCase.Steps.Count -gt 0)
+            if ($generationOnly -and $target.Key -cne "run") { continue }
+            Test-Case "N-15 $($target.Script) the hint of $($hintCase.Category) ($($hintCase.Name)) follows its Category line and names the category's own wording" {
+                $run = Invoke-Case -Name "n15-$($target.Key)-hint-$($hintCase.Name)" -ConfigText $matrixConfig -Script $target.Script -TagsSteps $hintCase.Tags -GenerateSteps $hintCase.Steps -RepeatLastGenerate:$hintCase.Repeat -TypedExceptions:$hintCase.Typed
+                Assert-Guards $run
+                Assert-True "a failure exit code" ($run.ExitCode -ne 0)
+                Assert-CategoryHint $run $hintCase.Category $hintCase.Phrase
+            }
+        }
+    }
+
+    foreach ($reviewHint in @(
+            @{ Name = "500"; Step = (New-Step "http" @{ status = 500; body = '{"error":"boom from the fake server"}' }); Category = "http_5xx"; Phrase = "GPU or CUDA" },
+            @{ Name = "timeout"; Step = (New-Step "status" @{ webStatus = "Timeout" }); Category = "timeout"; Phrase = "timeoutSec" })) {
+        foreach ($target in @(@{ Key = "review"; Script = "review-spec.ps1" }, @{ Key = "revise"; Script = "revise-spec.ps1" })) {
+            Test-Case "N-15 $($target.Script) the hint of $($reviewHint.Category) follows its Category line" {
+                $run = Invoke-Case -Name "n15-$($target.Key)-hint-$($reviewHint.Name)" -ConfigText $matrixConfig -Script $target.Script -TagsSteps $tagsAlpha -GenerateSteps @($reviewHint.Step) -RepeatLastGenerate -TypedExceptions
+                Assert-Guards $run
+                Assert-True "a failure exit code" ($run.ExitCode -ne 0)
+                Assert-CategoryHint $run $reviewHint.Category $reviewHint.Phrase
+            }
+        }
+    }
+
+    Test-Case "N-15 review-spec failure blocks: OLLAMA ERROR, the failed-request line, Category, Hint; REVIEWER OUTPUT ERROR, message, Category, Hint" {
+        $run = Invoke-Case -Name "n15-rv-500" -ConfigText $matrixConfig -Script "review-spec.ps1" -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "http" @{ status = 500; body = '{"error":"boom from the fake server"}' })) -RepeatLastGenerate -TypedExceptions
+        Assert-Guards $run
+        Assert-Equal "exit code" 2 $run.ExitCode
+        Assert-LineBlock $run @("=== OLLAMA ERROR ===", "Ollama request failed: http_5xx: boom from the fake server", "Category: http_5xx", @{ Prefix = "Hint: "; Contains = "GPU or CUDA" })
+        $empty = Invoke-Case -Name "n15-rv-empty" -ConfigText $matrixConfig -Script "review-spec.ps1" -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "ok" @{ response = " "; doneReason = "stop" }))
+        Assert-Guards $empty
+        Assert-LineBlock $empty @("=== REVIEWER OUTPUT ERROR ===", "Reviewer returned an empty response.", "Category: empty_response", @{ Prefix = "Hint: "; Contains = "empty answer" })
+    }
+
+    Test-Case "N-15 review-spec validation block: the Expected lines come first, then Category and Hint (format_invalid hint)" {
+        $run = Invoke-Case -Name "n15-rv-format" -ConfigText $matrixConfig -Script "review-spec.ps1" -TagsSteps $tagsAlpha -GenerateSteps @((& $okReply "No status section in this answer."))
+        Assert-Guards $run
+        Assert-Equal "exit code" 2 $run.ExitCode
+        Assert-LineBlock $run @("=== REVIEW VALIDATION ERROR ===", "Reviewer did not return a valid Status section.", "", "Expected:", "", "## Status", "PASS or FAIL", "Category: format_invalid", @{ Prefix = "Hint: "; Contains = "expected format" })
+    }
+
+    Test-Case "N-15 revise-spec failure: Category, then Hint (the thrown text goes to the error stream)" {
+        $run = Invoke-Case -Name "n15-rs-empty" -ConfigText $matrixConfig -Script "revise-spec.ps1" -TagsSteps $tagsAlpha -GenerateSteps @((New-Step "ok" @{ response = " "; doneReason = "stop" }))
+        Assert-Guards $run
+        Assert-True "a failure exit code" ($run.ExitCode -ne 0)
+        Assert-CategoryHint $run "empty_response" "empty answer"
+    }
+
+    # -----------------------------------------------------------------------
+    Write-Host ""
     Write-Host "=== AC-216: interfaces are preserved (review-spec, revise-spec) ===" -ForegroundColor Cyan
 
     Test-Case "AC-216 the parameter block of review-spec.ps1 equals the baseline list (names, types, mandatory flags, ValidateSet, default)" {

@@ -961,6 +961,84 @@ try {
         Assert-Equal "error members" "category,httpStatus,detail,hint,retryable,attempts" ((@((Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake (New-FakeTransport -Steps @((New-Fail5xx)))).error.PSObject.Properties | ForEach-Object { $_.Name })) -join ",")
     }
 
+    # Closing round of the Phase 2 final QA (I-4, N-13, I-7): cases added to AC-211
+    # and AC-215; no existing assertion was edited.
+
+    Test-Case "AC-211 a <think> block that spans several lines is stripped and its characters are counted (final QA I-4)" {
+        $registry = New-TestRegistry
+        # 8 + 1 + 8 + 2 + 10 = 29 characters inside the block (LF and CRLF line ends)
+        $reasoning = "line one`nline two`r`nline three"
+        $fake = New-FakeTransport -Steps @((New-Ok -Text ("<think>" + $reasoning + "</think>`n`nanswer`nsecond line")))
+        $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake
+        Assert-Equal "status" "ok" $result.status
+        Assert-Equal "text" "answer`nsecond line" $result.text
+        Assert-Equal "thinkingChars" 29 $result.meta.thinkingChars
+        $keep = New-TestRegistry -StripThinking $false
+        $fake2 = New-FakeTransport -Steps @((New-Ok -Text ("<think>" + $reasoning + "</think>`nanswer")))
+        $kept = Invoke-Engine -Exec (Get-TestExecution $keep) -Registry $keep -Fake $fake2
+        Assert-Equal "kept when stripThinking is false" ("<think>" + $reasoning + "</think>`nanswer") $kept.text
+        $both = New-FakeTransport -Steps @((New-Ok -Text ("<think>a`nb</think>`nfirst`n<think>`n`nc`n</think>`nsecond")))
+        $twice = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $both
+        Assert-Equal "two multi-line blocks: text" "first`nsecond" $twice.text
+        Assert-Equal "two multi-line blocks: thinkingChars (3 + 4)" 7 $twice.meta.thinkingChars
+    }
+
+    Test-Case "AC-211 the counts and durations reach the record of an empty_response and of a format_invalid (final QA N-13)" {
+        $registry = New-TestRegistry
+        $emptyAnswer = [pscustomobject]@{
+            response = ""; done = $true; done_reason = "stop"; total_duration = 7654321; load_duration = 111; prompt_eval_count = 4321
+            prompt_eval_duration = 222; eval_count = 98; eval_duration = 333
+        }
+        $cases = @(
+            @{ Name = "empty_response"; Text = ""; Check = $null; Category = "empty_response" },
+            @{ Name = "format_invalid"; Text = "no status"; Check = { param($t) "status_missing" }; Category = "format_invalid" }
+        )
+        foreach ($case in $cases) {
+            $answer = $emptyAnswer.PSObject.Copy()
+            $answer.response = $case.Text
+            $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response $answer))
+            $caseRoot = New-CaseRoot
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -TelemetryRoot $caseRoot -Check $case.Check
+            Assert-Equal "$($case.Name) category" $case.Category $result.error.category
+            Assert-Equal "$($case.Name) meta.evalCount" 98 $result.meta.evalCount
+            $records = @(Read-Records $caseRoot)
+            Assert-Equal "$($case.Name) lines" 1 $records.Count
+            $r = $records[0]
+            Assert-Equal "$($case.Name) status" "error" $r.status
+            Assert-Equal "$($case.Name) error_category" $case.Category $r.error_category
+            Assert-Equal "$($case.Name) eval_count" 98 $r.eval_count
+            Assert-Equal "$($case.Name) prompt_eval_count" 4321 $r.prompt_eval_count
+            Assert-Equal "$($case.Name) total_duration_ns" 7654321 $r.total_duration_ns
+            Assert-Equal "$($case.Name) load_duration_ns" 111 $r.load_duration_ns
+            Assert-Equal "$($case.Name) prompt_eval_duration_ns" 222 $r.prompt_eval_duration_ns
+            Assert-Equal "$($case.Name) eval_duration_ns" 333 $r.eval_duration_ns
+            Assert-Equal "$($case.Name) done_reason" "stop" $r.done_reason
+        }
+    }
+
+    Test-Case "AC-215 a reviewer-sized stub prompt against the frozen Phase 1 baseline file is sent, not refused: warn, budget_exceeded, one request (final QA I-7)" {
+        $baselinePath = Join-Path $root "tests\fixtures\config-v2-phase1-baseline.json"
+        $registry = Get-HarnessRegistry -ConfigPath $baselinePath
+        $reviewer = Resolve-HarnessExecution -Agent "spec-reviewer" -Registry $registry
+        Assert-Equal "the baseline has no budgetMode: the default is warn" "warn" $registry.defaults.budgetMode
+        # window 16384, reserved 8192, margin ceil(0.1 x 16384) = 1639 -> 6553 available;
+        # 26000 characters at 3.5 per token are ceil(7428.57) = 7429 tokens.
+        $fake = New-FakeTransport -Steps @((New-Ok -Text "reviewed"))
+        $caseRoot = New-CaseRoot
+        $result = Invoke-Engine -Exec $reviewer -Registry $registry -Fake $fake -System ("x" * 20000) -Prompt ("y" * 6000) -TelemetryRoot $caseRoot
+        Assert-Equal "status (sent, not refused)" "ok" $result.status
+        Assert-Equal "generate requests" 1 $fake.Count("generate")
+        Assert-Equal "budget status" "exceeded" $result.meta.budget.status
+        Assert-Equal "estimated tokens" 7429 $result.meta.budget.estTokens
+        Assert-Equal "available tokens" 6553 $result.meta.budget.available
+        Assert-Equal "warnings" "budget_exceeded" ($result.meta.warnings -join ",")
+        Assert-Equal "model_called" $true $result.meta.modelCalled
+        $record = @(Read-Records $caseRoot)[0]
+        Assert-Equal "record status" "success" $record.status
+        Assert-Equal "record warnings" "budget_exceeded" $record.warnings
+        Assert-Equal "record model_called" $true $record.model_called
+    }
+
     # -----------------------------------------------------------------------
     # AC-212 request body whitelist (FR-207, FR-206)
     # -----------------------------------------------------------------------

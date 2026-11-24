@@ -211,13 +211,21 @@ function global:Invoke-RestMethod {
         [int]$TimeoutSec
     )
 
+    # A simple function silently collects any parameter it does not declare (even
+    # -ErrorAction or -Headers) in $args, so the check is explicit: the engine must call
+    # the cmdlet with exactly the five declared parameters.
+    if ($args.Count -gt 0) {
+        Write-FakeCall @{ uri = $Uri; method = $Method; violation = $false; extraArgs = $args.Count }
+        throw "Fake Invoke-RestMethod: parameters outside the five declared ones"
+    }
+
     # Guard 3: URL allowlist. Anything else is refused before any request.
     if (-not $Uri.StartsWith("http://127.0.0.1:9/", [System.StringComparison]::Ordinal)) {
         Write-FakeCall @{ uri = $Uri; method = $Method; violation = $true }
         throw "Fake Invoke-RestMethod: URI not allowed, no request sent: $Uri"
     }
 
-    $entry = @{ uri = $Uri; method = $Method; violation = $false; timeoutSec = $TimeoutSec; contentType = [string]$ContentType }
+    $entry = @{ uri = $Uri; method = $Method; violation = $false; extraArgs = 0; timeoutSec = $TimeoutSec; contentType = [string]$ContentType }
     if ($Body -is [byte[]]) {
         $request = [System.Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
         $names = @($request.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
@@ -487,6 +495,8 @@ function Assert-Guards {
     if (-not $Run.FakeActive) { throw "guard 2: the child did not report the fake as active" }
     $violations = @($Run.Calls | Where-Object { $_.violation })
     if ($violations.Count -gt 0) { throw "guard 3: URL allowlist violations: " + (($violations | ForEach-Object { $_.uri }) -join ", ") }
+    $extra = @($Run.Calls | Where-Object { $_.extraArgs -gt 0 })
+    if ($extra.Count -gt 0) { throw "the engine called Invoke-RestMethod with parameters outside -Uri -Method -Body -ContentType -TimeoutSec ($($extra.Count) calls)" }
 }
 
 function Get-Route {
@@ -1025,6 +1035,23 @@ try {
     Write-Host ""
     Write-Host "=== AC-216: interfaces are preserved ===" -ForegroundColor Cyan
 
+    Test-Case "WP-2D hook rule (F-07): the -OnRetry script block of run-agent.ps1 reads only its own parameters, and no -Transport, -Sleep or -ResponseCheck is passed" {
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsDirectory "run-agent.ps1"), [ref]$tokens, [ref]$errors)
+        Assert-Equal "parse errors" 0 @($errors).Count
+        $assignment = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.AssignmentStatementAst] -and $n.Left.Extent.Text -ceq '$retryNotice' }, $true))
+        Assert-Equal "the retry notice assignment" 1 $assignment.Count
+        $block = @($assignment[0].FindAll({ param($n) $n -is [System.Management.Automation.Language.ScriptBlockExpressionAst] }, $true))[0].ScriptBlock
+        $declared = @($block.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        Assert-Equal "parameters of the hook" 4 $declared.Count
+        $read = @($block.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true) | ForEach-Object { $_.VariablePath.UserPath } | Sort-Object -Unique)
+        $foreign = @($read | Where-Object { $declared -notcontains $_ })
+        if ($foreign.Count -gt 0) { throw "the hook reads variables that are not its parameters: $($foreign -join ', ')" }
+        $callNames = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] -and [string]$n.GetCommandName() -ceq "Invoke-AgentModel" }, $true))
+        Assert-Equal "Invoke-AgentModel calls" 1 $callNames.Count
+        $parametersPassed = @($callNames[0].CommandElements | Where-Object { $_ -is [System.Management.Automation.Language.CommandParameterAst] } | ForEach-Object { $_.ParameterName } | Sort-Object)
+        Assert-Equal "parameters passed to Invoke-AgentModel" "Agent,Execution,OnRetry,Parts,Prompt,Registry,System,TelemetryRoot" ($parametersPassed -join ",")
+    }
     Test-Case "AC-216 the parameter block of run-agent.ps1 equals the baseline list (names, types, mandatory flags, ValidateSet)" {
         $tokens = $null; $errors = $null
         $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsDirectory "run-agent.ps1"), [ref]$tokens, [ref]$errors)

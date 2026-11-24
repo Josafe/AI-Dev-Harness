@@ -540,7 +540,12 @@ try {
         if ($agent -eq "reviser" -and $run.ExitCode -eq 0) { $problems += "expected a non-zero exit code" }
         if (-not ($run.Lines -ccontains "Model not found: $fakeModel")) { $problems += "missing line: Model not found: $fakeModel" }
         if (@(Get-GenerateCalls $run).Count -ne 0) { $problems += "expected zero /api/generate calls" }
-        if ($run.Telemetry.Count -ne 0) { $problems += "expected zero telemetry lines, got $($run.Telemetry.Count)" }
+        # FR-215 / FR-216 (AC-218): the one record of a call that stops before the model is reached.
+        if ($run.Telemetry.Count -ne 1) { $problems += "expected one telemetry line, got $($run.Telemetry.Count)" }
+        else {
+            if ($run.Telemetry[0].model_called -ne $false) { $problems += "telemetry model_called: expected false, got $($run.Telemetry[0].model_called)" }
+            if ($run.Telemetry[0].error_category -cne "model_not_installed") { $problems += "telemetry error_category: expected model_not_installed, got $($run.Telemetry[0].error_category)" }
+        }
         Write-Result -Name "AC-014 $agent with a missing model sends no generation request" -Problems $problems -Run $run
 
         $run = Invoke-Case -Name "ac014-$agent-case-insensitive" -Agent $agent -TagModels @("PHASE0-FAKE:1B")
@@ -560,7 +565,12 @@ try {
             $problems += "missing line starting with: Ollama is not reachable at"
         }
         if (@(Get-GenerateCalls $run).Count -ne 0) { $problems += "expected zero /api/generate calls" }
-        if ($run.Telemetry.Count -ne 0) { $problems += "expected zero telemetry lines, got $($run.Telemetry.Count)" }
+        # FR-215 / FR-216 (AC-218): the one record of a call that stops before the model is reached.
+        if ($run.Telemetry.Count -ne 1) { $problems += "expected one telemetry line, got $($run.Telemetry.Count)" }
+        else {
+            if ($run.Telemetry[0].model_called -ne $false) { $problems += "telemetry model_called: expected false, got $($run.Telemetry[0].model_called)" }
+            if ($run.Telemetry[0].error_category -cne "transport_other") { $problems += "telemetry error_category: expected transport_other (the fake host throws a plain exception), got $($run.Telemetry[0].error_category)" }
+        }
         Write-Result -Name "AC-015 $agent with Ollama unreachable sends no generation request" -Problems $problems -Run $run
     }
 
@@ -598,7 +608,12 @@ try {
     }
     if (@($run.Calls | Where-Object { -not $_.violation }).Count -ne 0) { $problems += "expected no allowed call" }
     if ($run.ExitCode -ne 2) { $problems += "expected exit code 2" }
-    if ($run.Telemetry.Count -ne 0) { $problems += "expected zero telemetry lines" }
+    # FR-215 / FR-216 (AC-218): the refused /api/tags request is the one record of the call.
+    if ($run.Telemetry.Count -ne 1) { $problems += "expected one telemetry line, got $($run.Telemetry.Count)" }
+    else {
+        if ($run.Telemetry[0].model_called -ne $false) { $problems += "telemetry model_called: expected false, got $($run.Telemetry[0].model_called)" }
+        if ($run.Telemetry[0].error_category -cne "transport_other") { $problems += "telemetry error_category: expected transport_other, got $($run.Telemetry[0].error_category)" }
+    }
     Write-Result -Name "AC-030 without a config the fallback URL is refused, never requested" -Problems $problems -Run $run
 }
 finally {

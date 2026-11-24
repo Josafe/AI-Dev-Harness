@@ -145,7 +145,10 @@ try {
         Assert-Equal "maxAttempts" "Int32:2" (Get-Leaf $shippedLeaves ".ollama.maxAttempts")
         Assert-Equal "retryBackoffSec" "Int32:5" (Get-Leaf $shippedLeaves ".ollama.retryBackoffSec")
         Assert-Equal "warmup" "Boolean:False" (Get-Leaf $shippedLeaves ".ollama.warmup")
-        Assert-Equal "charsPerToken" "Double:3.5" (Get-Leaf $shippedLeaves ".defaults.charsPerToken")
+        # A JSON number: Decimal in Windows PowerShell 5.1, Double in PowerShell 7; never a string.
+        $charsPerToken = $shippedRaw.defaults.charsPerToken
+        Assert-True "charsPerToken is a JSON number" (($charsPerToken -is [decimal]) -or ($charsPerToken -is [double]))
+        Assert-True "charsPerToken is 3.5" ([decimal]$charsPerToken -eq [decimal]3.5)
         Assert-True "warmup is the JSON boolean" ($shippedRaw.ollama.warmup -is [bool])
     }
 

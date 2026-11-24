@@ -427,6 +427,36 @@ try {
         }
     }
 
+    Test-Case "FR-211 (final QA N-1) the hints of http_5xx and transport_reset make no 'every attempt' claim: they name ollama.maxAttempts and say the availability check is asked once" {
+        foreach ($category in @("http_5xx", "transport_reset")) {
+            $hint = [string](Get-AgentErrorCategory -Category $category).hint
+            Assert-True "$category does not say every attempt" ($hint.IndexOf("every attempt", [System.StringComparison]::OrdinalIgnoreCase) -lt 0)
+            Assert-True "$category names ollama.maxAttempts" ($hint.IndexOf("ollama.maxAttempts", [System.StringComparison]::Ordinal) -ge 0)
+            Assert-True "$category says the availability check is asked once" ($hint.IndexOf("availability check is asked once", [System.StringComparison]::Ordinal) -ge 0)
+            Assert-True "$category still mentions the GPU or CUDA log and the restart" ($hint.IndexOf("GPU or CUDA", [System.StringComparison]::Ordinal) -ge 0 -and $hint.IndexOf("restarting the Ollama server", [System.StringComparison]::Ordinal) -ge 0)
+        }
+    }
+
+    Test-Case "FR-211 (final QA N-2) the timeout hint names timeoutSec for a model request and ollama.healthTimeoutSec for the availability check" {
+        $hint = [string](Get-AgentErrorCategory -Category "timeout").hint
+        Assert-True "names timeoutSec" ($hint.IndexOf("timeoutSec of the profile", [System.StringComparison]::Ordinal) -ge 0)
+        Assert-True "names ollama.healthTimeoutSec" ($hint.IndexOf("ollama.healthTimeoutSec", [System.StringComparison]::Ordinal) -ge 0)
+    }
+
+    Test-Case "FR-211 (final QA N-3) the transport_unreachable hint names ollama.url and the version 1 key ollamaUrl" {
+        $hint = [string](Get-AgentErrorCategory -Category "transport_unreachable").hint
+        Assert-True "names ollama.url" ($hint.IndexOf("ollama.url", [System.StringComparison]::Ordinal) -ge 0)
+        Assert-True "names ollamaUrl as the version 1 key" ($hint.IndexOf("ollamaUrl in a version 1 configuration", [System.StringComparison]::Ordinal) -ge 0)
+        Assert-True "still asks whether the server is running" ($hint.IndexOf("Ollama server is running", [System.StringComparison]::Ordinal) -ge 0)
+    }
+
+    Test-Case "FR-211 (final QA N-4) the format_invalid hint does not claim that the raw text was kept (the reviewer discards it)" {
+        $hint = [string](Get-AgentErrorCategory -Category "format_invalid").hint
+        Assert-True "no 'kept'" ($hint.IndexOf("kept", [System.StringComparison]::OrdinalIgnoreCase) -lt 0)
+        Assert-True "no 'raw text'" ($hint.IndexOf("raw text", [System.StringComparison]::OrdinalIgnoreCase) -lt 0)
+        Assert-True "still says the format was not the expected one" ($hint.IndexOf("expected format", [System.StringComparison]::Ordinal) -ge 0)
+    }
+
     Test-Case "FR-211 a classified failure carries the hint of its category" {
         foreach ($case in @(@{ S = 500; C = "http_5xx" }, @{ S = 400; C = "http_4xx" }, @{ S = 302; C = "transport_other" })) {
             $result = Get-AgentErrorCategory -Failure (New-Failure -Type "System.Net.WebException" -WebStatus "ProtocolError") -HttpStatus $case.S

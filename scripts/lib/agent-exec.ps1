@@ -277,16 +277,16 @@ function Get-AgentErrorCategory {
     )
 
     $hints = [ordered]@{
-        'http_5xx'                  = 'The Ollama server failed on every attempt. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
+        'http_5xx'                  = 'The Ollama server answered with a server error. A model request is repeated up to ollama.maxAttempts times; the availability check is asked once. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
         'http_4xx'                  = 'Ollama rejected the request. Check the model name, the options and the think setting of the profile against what the model supports.'
-        'timeout'                   = 'The server did not answer within timeoutSec of the profile. Check that the model fits in memory, or raise timeoutSec.'
-        'transport_unreachable'     = 'Ollama could not be reached. Check that the Ollama server is running and that ollamaUrl is correct.'
-        'transport_reset'           = 'The connection to Ollama was dropped on every attempt. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
+        'timeout'                   = 'The server did not answer in time. The limit is timeoutSec of the profile for a model request and ollama.healthTimeoutSec for the availability check. Check that the model fits in memory, or raise the limit.'
+        'transport_unreachable'     = 'Ollama could not be reached. Check that the Ollama server is running and that ollama.url (ollamaUrl in a version 1 configuration) is correct.'
+        'transport_reset'           = 'The connection to Ollama was dropped. A model request is repeated up to ollama.maxAttempts times; the availability check is asked once. If the Ollama log shows a GPU or CUDA initialization error, restarting the Ollama server usually clears it.'
         'transport_other'           = 'The request failed for a reason the harness does not classify. See the detail and the Ollama server log.'
         'context_budget_exceeded'   = 'The prompt does not fit the context budget of the profile. Shorten the input, or raise the context window of the profile.'
         'thinking_budget_exhausted' = 'The model spent its output budget on reasoning and returned no answer. Raise options.num_predict or the context window of the profile, or change its think setting.'
         'empty_response'            = 'The model returned an empty answer. Try again, or use a shorter input.'
-        'format_invalid'            = 'The answer did not have the expected format. The raw text was kept.'
+        'format_invalid'            = 'The answer did not have the expected format.'
         'model_not_installed'       = 'The model is not installed on the Ollama server. Pull it with ollama pull, or choose another profile.'
     }
 

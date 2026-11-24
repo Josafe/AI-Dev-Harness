@@ -126,7 +126,7 @@ try {
             $after = @(Get-ChildItem Function:\ | ForEach-Object { $_.Name })
             [pscustomobject]@{ Output = $output; New = @($after | Where-Object { $before -notcontains $_ } | Sort-Object) }
         }
-        $expected = @("Get-AgentErrorCategory", "Get-AgentRetryDelaySec", "Invoke-AgentModel", "Invoke-OllamaHttp", "New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt", "Reset-AgentExecState", "Test-AgentContextBudget", "Test-OllamaModel") | Sort-Object
+        $expected = @("Get-AgentErrorCategory", "Get-AgentRetryDelaySec", "Invoke-AgentModel", "Invoke-HarnessGenerate", "Invoke-OllamaHttp", "New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt", "Reset-AgentExecState", "Test-AgentContextBudget", "Test-HarnessModelAvailable", "Test-OllamaModel") | Sort-Object
         if ($result.Output.Count -ne 0) { "dot-sourcing produced output: $($result.Output -join '|')" }
         if (($result.New -join ",") -cne ($expected -join ",")) { "functions defined: $($result.New -join ', ')" }
     }

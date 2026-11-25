@@ -62,7 +62,7 @@ Always useful: Execution Order L573-596 (needs and order), Affected Files L562-5
 - Windows PowerShell 5.1, ASCII only; change only the files of Affected Files.
 - Tests offline with the engine fake host (no Ollama, no network, writes only under TEMP, tripwire clean).
 - Expected `scripts\test-all.ps1` at `phase2-calibrated`: 19 discovered, 18 PASS, 1 skipped (`test-spec-integration.ps1`), result PASS WITH SKIPS.
-- Sessions never push, reset, rebase, tag, amend or delete; the owner does Git remote work. One final `test-all` per package (spec Execution Order says "twice": owner to settle), then a report and STOP for review.
+- Sessions never push, reset, rebase, tag, amend or delete; the owner does Git remote work. One final `test-all` per package (owner cost rule; the gate itself runs it twice), then a report and STOP for review.
 - Mutation proofs only for the key rules the AC names (temporary edit, hash-checked revert).
 - Assumptions never become requirements; report ambiguity instead of inventing.
 

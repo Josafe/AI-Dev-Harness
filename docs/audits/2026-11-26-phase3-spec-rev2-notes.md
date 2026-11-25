@@ -111,6 +111,6 @@ None of these was applied, because each contradicts a decision or weakens a crit
 - Facts about current behavior come from reading the files at `phase2-calibrated`: `specify.ps1` (382 lines), the exits and throws of `run-agent.ps1` (ends `exit 0`, prints the answer), `revise-spec.ps1` (ends `exit 0`), `validate-spec.ps1` (no `exit`), `Get-AgentErrorCategory`, `Invoke-OllamaHttp` (a GET without a body works for another `Purpose`, so `/api/version` needs no engine change), the telemetry writer, the nine wrapper cases (grep), the WP-2E numbers (copied from sections 4.1, 5, 9, 12, 13).
 - The concurrency, `File.Replace` and run-claim numbers are the review's experiments; they were not repeated.
 - Whether `Test-OllamaModel` can be called per model without a telemetry root (read, not run); whether `nvidia-smi` prints one integer per GPU line with those flags on the owner's driver; whether the 8.3 short-name expansion by a component walk behaves as intended.
-- The constant 7 was derived from 16 prompts and one truncation; nothing was tested at another window size.
+- The constant 7 was derived from 16 prompts and one truncation (WP-2E, window 16,384); it is now also backed by the owner's manual probes of 2026-11-25 (windows 4096 and 8192; FR-316 Probe); other windows and natural text are untested.
 - Windows device-name behavior for `CON.txt`-style names was taken from general Windows rules, not tested here.
 - The size target was not met (section above).

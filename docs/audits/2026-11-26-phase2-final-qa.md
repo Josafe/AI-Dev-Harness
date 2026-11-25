@@ -253,3 +253,81 @@ Recommendation: **keep them through WP-2E, delete them in Phase 3** together wit
 - Part C covered the failures the server emulates. The fake-host comparison is per category, attempts and exit code; it is not a byte comparison of every console line for every scenario.
 - A slower machine or a parallel `test-all` (runtime margin 4.5x observed on this one).
 - The deferred criteria AC-205, AC-220 to AC-222.
+
+## Closing round
+
+**Branch:** `fix/phase2-closing`, from `docs/phase2-final-qa` (`77f4aee`). Six local commits before this section, nothing pushed. Same host (Windows PowerShell 5.1, es-ES, `core.autocrlf=true`), no Ollama, no network. Owner decisions applied as given: I-1 amend the spec and keep the code, I-6 and the deletion of the wrappers to Phase 3 (text only), I-5 a precondition of WP-2E (text only).
+
+### Findings and what happened
+
+| Finding | Result | Commit |
+|---|---|---|
+| C1 / I-2 | Fixed (text): "Affected Files" lists `scripts/test-shipped-config.ps1`, the spec file and the audit reports; the unchanged roadmap row is gone (the diff against `phase1-hardened` does not contain it). | `be31671` |
+| C2 / I-1 | Fixed (text): FR-202 and NFR-205 say that the body line of the `run-agent.ps1` block is `detail`, with the real-host observation (a Content-Length error printed an empty line before). The code is unchanged. | `be31671` |
+| C3 / I-3 | Fixed (text): NFR-205 lists reviewer and reviser `success` -> `error` on an empty response and on `format_invalid`, the reviser's lost localized text, the reviewer's line `Ollama request failed: <category>: <detail>`, and the `Warning: budget_exceeded` line on success; FR-202 no longer says that nothing is printed for warnings. | `be31671` |
+| N-16 | Fixed (text): AC-222 agrees with Execution Order step 5 (acceptance does not depend on the spike or its report). | `be31671` |
+| N-11 (spec) | Fixed (text): the Edge Cases say "per script invocation". | `be31671` |
+| I-5 | Deferred as text: DF-201 in the new "Deferred Items" section and a precondition in the WP-2E row. No code change. | `be31671` |
+| I-6 | Deferred as text: DF-202 (Phase 3). | `be31671` |
+| Wrappers | Deferred as text: DF-203 (delete in Phase 3 with their 8 suite cases and the scan exemption). | `be31671` |
+| I-4 | Test added: a `<think>` block over several lines (LF and CRLF, two blocks) is stripped and counted. Kills Q08. | `31cadd4` |
+| I-7 | Test added in `test-agent-exec.ps1` (not in `test-shipped-config.ps1`, which only loads `config.ps1`): the baseline file, `spec-reviewer`, 26,000 characters (7,429 tokens against 6,553 available) is sent, `warn`, one request, warning in the result and the record. | `31cadd4` |
+| N-13 | Test added: `eval_count`, `prompt_eval_count` and the four durations reach the record of an `empty_response` and of a `format_invalid`. Kills Q10. | `31cadd4` |
+| N-14 | Test added for the three scripts: an `output_truncated` success prints no `Warning:` line and the record carries the code. Kills Q15. | `31cadd4` |
+| N-15 | Tests added: consecutive line order of the failure blocks of `run-agent.ps1` and `review-spec.ps1` (500, timeout, budget, empty, validation), and the hint of every category on the line right after its `Category:` line, pinned by one phrase of the fixed wording; the unreachable, tags-timeout and not-installed hints for all three scripts. Kills Q16 and Q17. | `31cadd4` |
+| N-1 to N-4 | Fixed: the four hints reworded (no "every attempt", the timeout hint names `timeoutSec` and `ollama.healthTimeoutSec`, the unreachable hint names `ollama.url` and the v1 `ollamaUrl`, `format_invalid` no longer says the raw text was kept). Four cases in `test-agent-errors.ps1`; FR-211 says the same. | `b22e433` |
+| N-8, N-9 | Fixed: `charsPerToken` is compared as `[double]` (NaN rejected), valid range 0.01 to 10, every bad value gives `registry_invalid: defaults.charsPerToken`. FR-217, AC-215 and OQ-213 updated. Two cases in `test-registry-engine.ps1` and one in `test-agent-exec.ps1` (0.01 and 10 with a 1,000,001-character prompt never throw). | `3bb41cb` |
+| N-10 | Fixed: the CSV append reads the last byte and adds a line end when it is not LF (CR LF, or LF after a lone CR; a last byte of 0 is left alone). Two cases in `test-agent-telemetry-v2.ps1`. FR-216 says so. | `842f423` |
+| N-11, N-12 (code) | Fixed: three "per process" comments and the fake-host comment in `agent-exec.ps1`. Comments only, so no assertion applies. | `003ca6e` |
+
+No existing assertion was edited, so no item was stopped and no `wip/phase2-closing-*` branch exists.
+
+**Decision to confirm (N-9).** The task suggested a lower bound of 0.1 "for example". The existing boundary table of `test-registry-engine.ps1` (line 247) expects `0.01` to be accepted, so a bound of 0.1 would have needed an edit of that assertion, which the task forbids. I used 0.01. It is enough: at 0.01 a 2 GiB-character prompt is about 2e11, far from the decimal range. If the owner wants 0.1, the exact edit is in `scripts/test-registry-engine.ps1` line 247, `"0.01" = $true` -> `"0.01" = $false` (plus the same bound in `config.ps1` and FR-217).
+
+### Counts
+
+Offline `scripts\test-all.ps1`, run twice at the end: 19 discovered, 18 executed, 18 PASS, 0 FAIL, 1 skipped (`test-spec-integration.ps1`), `STATUS: PASS WITH SKIPS`, tripwire clean in every suite of both runs, the two logs identical with the times removed, `git status` empty afterwards. The baseline run at the start of the round was the same (19 / 18 / 1).
+
+| Suite | Before | After |
+|---|---|---|
+| test-agent-exec | 109 | 113 |
+| test-agent-errors | 39 | 43 |
+| test-agent-telemetry-v2 | 34 | 36 |
+| test-engine-callsites | 133 | 160 |
+| test-registry-engine | 61 | 63 |
+| every other suite | as in section 3 | unchanged (budget 41, prompts 23, telemetry 23, build-context 15, mode-propagation 11, registry-callsites 55, registry 86, run-agent 5, scan-repository 26, shipped-config 7, spec 17, validate-spec 54) |
+
+`test-engine-callsites.ps1` takes about 164 s (limit 600 s). `scripts\validate-spec.ps1` passes on the spec after each commit; the `Verifies:` lines and the matrix were not touched.
+
+### Mutation re-run
+
+TEMP copies of `scripts`, `tests`, `.ai`, `specs`, `docs`; SHA-256 of the 193 tracked repository files equal before and after. An unmutated control passes (exec 113, errors 43, registry-engine 63, telemetry-v2 36). The QA does not give the exact edit of Q15 to Q17, so those are rebuilt from the descriptions in section 7; each is run in every place it can apply.
+
+| Mutant | Mutation | Result |
+|---|---|---|
+| Q08 | `(?s)` removed from the think-strip regexes | killed by `test-agent-exec` (1 case) |
+| Q10 | response counts dropped from the record of a failed interpretation | killed by `test-agent-exec` (1 case) |
+| Q15a, b, c | the Warning line printed for any warning, in `run-agent`, `review-spec`, `revise-spec` | each killed by `test-engine-callsites` (1 case) |
+| Q16 | `Category:` before `PASS or FAIL` in the review validation block | killed by `test-engine-callsites` (1 case) |
+| Q17a | wrong hint text for `transport_unreachable` | killed by `test-agent-errors` |
+| Q17b | `Test-OllamaModel` returns the `transport_other` hint on a failed `/api/tags` | killed by `test-agent-exec` (1 case) |
+| M1 | `charsPerToken` lower bound back to "greater than 0" | killed by `test-registry-engine` (2 cases) |
+| M2 | `charsPerToken` compared as `[decimal]` again | killed by `test-registry-engine` (2 cases) |
+| M3 | NaN accepted | killed by `test-registry-engine` (1 case) |
+| M4 | no line end before the CSV append | killed by `test-agent-telemetry-v2` (1 case) |
+| M5 | a line end added also when the file ends with LF | killed by `test-agent-telemetry-v2` (3 cases) |
+| M6 | `http_5xx` hint says "every attempt" again | killed by `test-agent-errors` |
+| M7 | `timeout` hint loses `ollama.healthTimeoutSec` | killed by `test-agent-errors` |
+| M8 | `format_invalid` hint says the raw text was kept | killed by `test-agent-errors` |
+| M9 | unreachable hint names only `ollamaUrl` | killed by `test-agent-errors` |
+
+5 QA survivors (as 8 mutants) and 9 mutants of my own changes: 17 of 17 killed. Q18 was not rerun (the QA judged it not meaningful).
+
+### Not fixed, and why
+
+- **N-5** (the Warning line is printed after the call): accepted as in the report; no change.
+- **N-6** (a 200 HTML or truncated JSON names no type), **N-7** (arrays accepted by `Get-ConfigValue`): not in the list of this round; open, low risk.
+- **N-17**: none needed. **N-18** (red intermediate commits): the owner's choice; this round added no commit that was red in the suites it touches (the touched suites were run at each commit, the whole of `test-all.ps1` only at the tip).
+- **WP-2D1 10.8** (a whitespace-only or lone-CR task at script level) and **V-1 to V-5** (real-host divergences of the fake): unchanged.
+- **I-5, I-6, wrappers**: recorded, not built (above).
+- Still NOT VERIFIED: everything against a real Ollama, as in section 11. The new hint wording and the `Warning` line were checked only through the fake host.

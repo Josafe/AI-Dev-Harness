@@ -5,7 +5,7 @@
     NFR-202, OQ-206).
 
 .DESCRIPTION
-    - No network, no Ollama, no child process, no sleeping. The writer is dot-sourced
+    - No network, no Ollama. Only the AC-317 lock cases (Phase 3 A1) start child PowerShell processes. The writer is dot-sourced
       and called with literal values. Every file is written under one temporary
       folder below TEMP (a different root per case) and the folder is deleted at the
       end; the repository is never passed as a root and nothing is written to it.
@@ -809,6 +809,278 @@ try {
     }
 
     # -----------------------------------------------------------------------
+    # Phase 3 A1: the telemetry lock (FR-311 c, FR-307 reader, AC-317, D-308).
+    # Child processes (Start-Process, tests only) run a worker script written to the
+    # temporary folder; they use the real Global\ mutex name of a per-case root, so
+    # cases never share a lock. Every expected number is a literal (4 x 40 = 160,
+    # 2 x 40 = 80).
+    # -----------------------------------------------------------------------
+    Write-Host ""
+    Write-Host "=== AC-317 telemetry lock ===" -ForegroundColor Cyan
+
+    $workerPath = Join-Path $tempRoot "lock-worker.ps1"
+    $workerText = @'
+param(
+    [string]$Lib, [string]$Root, [string]$Tag, [string]$Mode = "write", [int]$Count = 0, [int]$PauseMs = 5,
+    [string]$Go = "", [string]$Stop = "", [string]$Ready = "", [string]$ResultPath = "", [int]$LockWaitMs = 10000,
+    [switch]$ReadAfter
+)
+$ErrorActionPreference = "Stop"
+. $Lib
+$result = [ordered]@{ tag = $Tag; written = 0; badLines = 0; missing = 0; reads = 0; shrank = 0; warnings = 0; elapsedMs = 0 }
+while ($Go -ne "" -and -not (Test-Path -LiteralPath $Go)) { Start-Sleep -Milliseconds 2 }
+$watch = [System.Diagnostics.Stopwatch]::StartNew()
+if ($Mode -eq "write") {
+    $mine = New-Object 'System.Collections.Generic.List[string]'
+    for ($i = 1; $i -le $Count; $i++) {
+        $callId = "$Tag-$i"
+        $wv = @()
+        Write-HarnessModelTelemetry -Root $Root -Agent "worker" -Model "m" -StartedAt ([datetime]::UtcNow) -Status "success" -CallId $callId -LockWaitMs $LockWaitMs -WarningVariable wv -WarningAction SilentlyContinue
+        $result.warnings += @($wv).Count
+        $mine.Add($callId)
+        $result.written++
+        if ($ReadAfter) {
+            $read = Read-HarnessModelTelemetry -Root $Root
+            $seen = @{}
+            foreach ($line in $read.Lines) {
+                try { $seen[[string]($line | ConvertFrom-Json).call_id] = $true } catch { $result.badLines++ }
+            }
+            foreach ($id in $mine) { if (-not $seen.ContainsKey($id)) { $result.missing++ } }
+        }
+        if ($PauseMs -gt 0) { Start-Sleep -Milliseconds $PauseMs }
+    }
+}
+elseif ($Mode -eq "read") {
+    $last = 0
+    while (-not (Test-Path -LiteralPath $Stop)) {
+        $read = Read-HarnessModelTelemetry -Root $Root
+        $result.reads++
+        $good = 0
+        foreach ($line in $read.Lines) {
+            try { [void]($line | ConvertFrom-Json); $good++ } catch { $result.badLines++ }
+        }
+        if ($good -lt $last) { $result.shrank++ }
+        $last = $good
+        Start-Sleep -Milliseconds 3
+    }
+}
+elseif ($Mode -eq "hold") {
+    $mutex = New-Object System.Threading.Mutex -ArgumentList $false, (Get-HarnessTelemetryMutexName -LogDir (Join-Path $Root "logs"))
+    [void]$mutex.WaitOne()
+    [System.IO.File]::WriteAllText($Ready, "held")
+    while (-not (Test-Path -LiteralPath $Stop)) { Start-Sleep -Milliseconds 20 }
+    $mutex.ReleaseMutex()
+}
+$result.elapsedMs = [int]$watch.ElapsedMilliseconds
+if ($ResultPath -ne "") { [System.IO.File]::WriteAllText($ResultPath, ($result | ConvertTo-Json -Compress)) }
+exit 0
+'@
+    [System.IO.File]::WriteAllText($workerPath, $workerText, $utf8NoBom)
+
+    function Start-LockWorker {
+        param([string]$CaseRoot, [string]$Tag, [string]$Mode = "write", [int]$Count = 0, [string]$Go = "", [string]$Stop = "", [string]$Ready = "", [int]$LockWaitMs = 10000, [switch]$ReadAfter)
+        $resultPath = Join-Path $CaseRoot ("result-" + $Tag + ".json")
+        $argList = @("-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "`"$workerPath`"", "-Lib", "`"$telemetryLibrary`"", "-Root", "`"$CaseRoot`"",
+            "-Tag", $Tag, "-Mode", $Mode, "-Count", "$Count", "-LockWaitMs", "$LockWaitMs", "-ResultPath", "`"$resultPath`"")
+        if ($Go -ne "") { $argList += @("-Go", "`"$Go`"") }
+        if ($Stop -ne "") { $argList += @("-Stop", "`"$Stop`"") }
+        if ($Ready -ne "") { $argList += @("-Ready", "`"$Ready`"") }
+        if ($ReadAfter) { $argList += "-ReadAfter" }
+        $process = Start-Process -FilePath "powershell.exe" -ArgumentList $argList -PassThru -WindowStyle Hidden
+        [void]$process.Handle
+        return [pscustomobject]@{ Process = $process; ResultPath = $resultPath; Tag = $Tag }
+    }
+
+    function Wait-LockWorker {
+        param($Worker, [int]$TimeoutSec = 180)
+        if (-not $Worker.Process.WaitForExit($TimeoutSec * 1000)) { $Worker.Process.Kill(); throw "worker $($Worker.Tag) timed out" }
+        Assert-Equal "worker $($Worker.Tag) exit code" 0 $Worker.Process.ExitCode
+        return ([System.IO.File]::ReadAllText($Worker.ResultPath) | ConvertFrom-Json)
+    }
+
+    function Wait-ForFile {
+        param([string]$Path, [int]$TimeoutSec = 60)
+        $watch = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Test-Path -LiteralPath $Path)) {
+            if ($watch.Elapsed.TotalSeconds -gt $TimeoutSec) { throw "timed out waiting for $Path" }
+            [System.Threading.Thread]::Sleep(10)
+        }
+    }
+
+    function Get-FileBytesList {
+        param([string]$Path)
+        return ,([System.IO.File]::ReadAllBytes($Path))
+    }
+
+    # Count of occurrences of the three BOM bytes in a byte array.
+    function Get-BomCount {
+        param([byte[]]$Bytes)
+        $n = 0
+        for ($i = 0; $i + 2 -lt $Bytes.Length; $i++) { if ($Bytes[$i] -eq 0xEF -and $Bytes[$i + 1] -eq 0xBB -and $Bytes[$i + 2] -eq 0xBF) { $n++ } }
+        return $n
+    }
+
+    Test-Case "AC-317 four child processes write 40 records each: the JSONL has exactly 160 parsable lines with 160 distinct call_id; the CSV has one header and 160 rows" {
+        $caseRoot = New-CaseRoot
+        $go = Join-Path $caseRoot "go.txt"
+        $workers = @(1..4 | ForEach-Object { Start-LockWorker -CaseRoot $caseRoot -Tag "w$_" -Count 40 -Go $go })
+        [System.IO.File]::WriteAllText($go, "go")
+        foreach ($worker in $workers) { $r = Wait-LockWorker $worker; Assert-Equal "$($worker.Tag) written" 40 $r.written }
+
+        $lines = Read-Jsonl $caseRoot
+        Assert-Equal "JSONL lines" 160 $lines.Count
+        $ids = @{}
+        foreach ($line in $lines) { $ids[[string]($line | ConvertFrom-Json).call_id] = $true }
+        Assert-Equal "distinct call_id" 160 $ids.Count
+
+        $csvLines = @([System.IO.File]::ReadAllLines((Join-Path $caseRoot "logs\model-calls.csv")) | Where-Object { $_.Trim() -ne "" })
+        Assert-Equal "CSV lines" 161 $csvLines.Count
+        $headers = @($csvLines | Where-Object { $_.TrimStart([char]0xFEFF) -ceq $v2Header })
+        Assert-Equal "CSV header lines" 1 $headers.Count
+        Assert-Equal "CSV header is the first line" $v2Header ($csvLines[0].TrimStart([char]0xFEFF))
+        $rows = @(Import-Csv -LiteralPath (Join-Path $caseRoot "logs\model-calls.csv"))
+        Assert-Equal "CSV rows" 160 $rows.Count
+        $csvIds = @{}
+        foreach ($row in $rows) { $csvIds[[string]$row.call_id] = $true }
+        Assert-Equal "CSV distinct call_id" 160 $csvIds.Count
+    }
+
+    Test-Case "AC-317 two writers (40 each) that read the JSONL with the FR-307 rules after every write, and a third process reading in a loop, lose no record (80) and never see a torn line" {
+        $caseRoot = New-CaseRoot
+        $go = Join-Path $caseRoot "go.txt"
+        $stop = Join-Path $caseRoot "stop.txt"
+        $reader = Start-LockWorker -CaseRoot $caseRoot -Tag "rd" -Mode "read" -Go $go -Stop $stop
+        $writers = @(1..2 | ForEach-Object { Start-LockWorker -CaseRoot $caseRoot -Tag "w$_" -Count 40 -Go $go -ReadAfter })
+        [System.IO.File]::WriteAllText($go, "go")
+        foreach ($worker in $writers) {
+            $r = Wait-LockWorker $worker
+            Assert-Equal "$($worker.Tag) written" 40 $r.written
+            Assert-Equal "$($worker.Tag) own records missing in a read" 0 $r.missing
+            Assert-Equal "$($worker.Tag) unparsable lines in a read" 0 $r.badLines
+        }
+        [System.IO.File]::WriteAllText($stop, "stop")
+        $rr = Wait-LockWorker $reader
+        Assert-True "the looping reader read at least once" ($rr.reads -gt 0)
+        Assert-Equal "reader unparsable lines" 0 $rr.badLines
+        Assert-Equal "reader saw the record count shrink" 0 $rr.shrank
+        $lines = Read-Jsonl $caseRoot
+        Assert-Equal "JSONL lines" 80 $lines.Count
+        $ids = @{}
+        foreach ($line in $lines) { $ids[[string]($line | ConvertFrom-Json).call_id] = $true }
+        Assert-Equal "distinct call_id" 80 $ids.Count
+    }
+
+    Test-Case "AC-317 / RN-10 bytes: a new JSONL and CSV start with one BOM, later appends add none, every line ends CRLF, and the bytes equal what Add-Content -Encoding UTF8 writes" {
+        $caseRoot = New-CaseRoot
+        1..3 | ForEach-Object { Write-Record $caseRoot @{ CallId = "bom-$_" } }
+        foreach ($name in @("model-calls.jsonl", "model-calls.csv")) {
+            $bytes = Get-FileBytesList (Join-Path $caseRoot "logs\$name")
+            Assert-True "$name starts with the BOM" ($bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+            Assert-Equal "$name BOM count" 1 (Get-BomCount $bytes)
+            for ($i = 0; $i -lt $bytes.Length; $i++) {
+                if ($bytes[$i] -eq 10 -and ($i -eq 0 -or $bytes[$i - 1] -ne 13)) { throw "$name has a bare LF at byte $i" }
+            }
+            Assert-True "$name ends with CRLF" ($bytes[$bytes.Length - 2] -eq 13 -and $bytes[$bytes.Length - 1] -eq 10)
+        }
+        # Reference: the same lines written by Add-Content / Set-Content as at phase2-calibrated.
+        $jsonLines = @([System.IO.File]::ReadAllLines((Join-Path $caseRoot "logs\model-calls.jsonl"), $utf8NoBom) | ForEach-Object { $_.TrimStart([char]0xFEFF) })
+        $reference = Join-Path $caseRoot "reference.jsonl"
+        foreach ($line in $jsonLines) { Add-Content -Path $reference -Value $line -Encoding UTF8 }
+        Assert-Equal "JSONL bytes equal Add-Content output" (Get-Sha256 $reference) (Get-Sha256 (Join-Path $caseRoot "logs\model-calls.jsonl"))
+        $csvAll = @([System.IO.File]::ReadAllLines((Join-Path $caseRoot "logs\model-calls.csv"), $utf8NoBom) | ForEach-Object { $_.TrimStart([char]0xFEFF) })
+        $referenceCsv = Join-Path $caseRoot "reference.csv"
+        $csvAll | Select-Object -First 2 | Set-Content -LiteralPath $referenceCsv -Encoding UTF8
+        $csvAll | Select-Object -Skip 2 | Add-Content -LiteralPath $referenceCsv -Encoding UTF8
+        Assert-Equal "CSV bytes equal Set-Content/Add-Content output" (Get-Sha256 $referenceCsv) (Get-Sha256 (Join-Path $caseRoot "logs\model-calls.csv"))
+    }
+
+    Test-Case "AC-317 a writer with -LockWaitMs 300 against a child holding the mutex waits, warns once, writes its record and exits 0; the reader reports LockTimedOut and still reads" {
+        $caseRoot = New-CaseRoot
+        Write-Record $caseRoot @{ CallId = "before" }
+        $stop = Join-Path $caseRoot "stop.txt"
+        $ready = Join-Path $caseRoot "ready.txt"
+        $holder = Start-LockWorker -CaseRoot $caseRoot -Tag "hold" -Mode "hold" -Stop $stop -Ready $ready
+        Wait-ForFile $ready
+        $writer = Start-LockWorker -CaseRoot $caseRoot -Tag "late" -Count 1 -LockWaitMs 300
+        $r = Wait-LockWorker $writer
+        Assert-Equal "late written" 1 $r.written
+        Assert-Equal "late warnings" 1 $r.warnings
+        Assert-True "the writer waited about 300 ms before writing" ($r.elapsedMs -ge 250)
+        $read = Read-HarnessModelTelemetry -Root $caseRoot -LockWaitMs 200
+        Assert-True "reader LockTimedOut" $read.LockTimedOut
+        Assert-Equal "reader lines while the lock is held elsewhere" 2 $read.Lines.Count
+        [System.IO.File]::WriteAllText($stop, "stop")
+        [void](Wait-LockWorker $holder)
+        $free = Read-HarnessModelTelemetry -Root $caseRoot -LockWaitMs 2000
+        Assert-True "reader LockTimedOut is false when nobody holds the lock" (-not $free.LockTimedOut)
+        Assert-Equal "JSONL lines" 2 (Read-Jsonl $caseRoot).Count
+    }
+
+    Test-Case "AC-317 a holder killed while holding the mutex does not block the next writer: abandoned counts as acquired, no warning, no long wait" {
+        $caseRoot = New-CaseRoot
+        $ready = Join-Path $caseRoot "ready.txt"
+        $holder = Start-LockWorker -CaseRoot $caseRoot -Tag "hold" -Mode "hold" -Stop (Join-Path $caseRoot "never.txt") -Ready $ready
+        Wait-ForFile $ready
+        $holder.Process.Kill()
+        [void]$holder.Process.WaitForExit(30000)
+        $writer = Start-LockWorker -CaseRoot $caseRoot -Tag "next" -Count 1 -LockWaitMs 10000
+        $r = Wait-LockWorker $writer
+        Assert-Equal "next written" 1 $r.written
+        Assert-Equal "next warnings" 0 $r.warnings
+        Assert-True "the next writer did not wait for the wait limit" ($r.elapsedMs -lt 8000)
+        Assert-Equal "JSONL lines" 1 (Read-Jsonl $caseRoot).Count
+    }
+
+    Test-Case "FR-311 c the mutex name is Global\AiHarnessTelemetry- plus the first 16 hex of SHA-256 of the lower-cased resolved log directory; spelling does not change it" {
+        $caseRoot = New-CaseRoot
+        $logDir = Join-Path $caseRoot "logs"
+        [void][System.IO.Directory]::CreateDirectory($logDir)
+        $key = $logDir.ToLowerInvariant()
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $expectedHex = ([System.BitConverter]::ToString($sha.ComputeHash($utf8NoBom.GetBytes($key))).Replace("-", "")).ToLowerInvariant().Substring(0, 16)
+        $sha.Dispose()
+        $name = Get-HarnessTelemetryMutexName -LogDir $logDir
+        Assert-Equal "name" ("Global\AiHarnessTelemetry-" + $expectedHex) $name
+        Assert-Equal "trailing backslash" $name (Get-HarnessTelemetryMutexName -LogDir ($logDir + "\"))
+        Assert-Equal "upper case" $name (Get-HarnessTelemetryMutexName -LogDir $logDir.ToUpperInvariant())
+        Assert-Equal "dot segments and forward slashes" $name (Get-HarnessTelemetryMutexName -LogDir ((Join-Path $caseRoot "x\..\logs\.").Replace("\", "/")))
+        $other = Join-Path $caseRoot "other"
+        Assert-True "another directory gives another name" ($name -cne (Get-HarnessTelemetryMutexName -LogDir $other))
+        $short = $null
+        try { $short = (New-Object -ComObject Scripting.FileSystemObject).GetFolder($logDir).ShortPath } catch { $short = $null }
+        if ($null -ne $short -and $short -cne $logDir) {
+            Assert-Equal "8.3 alias" $name (Get-HarnessTelemetryMutexName -LogDir $short)
+        }
+        else {
+            Write-Host "       (no 8.3 alias for the temporary folder on this machine; alias spelling not exercised)" -ForegroundColor DarkYellow
+        }
+    }
+
+    Test-Case "FR-307 reader: drops the BOM, reads only the bytes after FromOffset, -LengthOnly gives the length, a missing file or folder is Exists false" {
+        $caseRoot = New-CaseRoot
+        $none = Read-HarnessModelTelemetry -Root $caseRoot
+        Assert-True "no logs folder: Exists false" (-not $none.Exists)
+        Assert-Equal "no logs folder: lines" 0 $none.Lines.Count
+        Write-Record $caseRoot @{ CallId = "r1" }
+        $first = Read-HarnessModelTelemetry -Root $caseRoot
+        Assert-True "Exists" $first.Exists
+        Assert-Equal "first read lines" 1 $first.Lines.Count
+        Assert-Equal "first line starts with the JSON object, not the BOM" "{" $first.Lines[0].Substring(0, 1)
+        Assert-Equal "length is the file length" (Get-Item -LiteralPath (Join-Path $caseRoot "logs\model-calls.jsonl")).Length $first.Length
+        $lengthOnly = Read-HarnessModelTelemetry -Root $caseRoot -LengthOnly
+        Assert-Equal "LengthOnly length" $first.Length $lengthOnly.Length
+        Assert-Equal "LengthOnly lines" 0 $lengthOnly.Lines.Count
+        Write-Record $caseRoot @{ CallId = "r2" }
+        Write-Record $caseRoot @{ CallId = "r3" }
+        $since = Read-HarnessModelTelemetry -Root $caseRoot -FromOffset $first.Length
+        Assert-Equal "lines since the offset" 2 $since.Lines.Count
+        Assert-Equal "first call_id since the offset" "r2" ([string]($since.Lines[0] | ConvertFrom-Json).call_id)
+        Assert-Equal "second call_id since the offset" "r3" ([string]($since.Lines[1] | ConvertFrom-Json).call_id)
+        $again = Read-HarnessModelTelemetry -Root $caseRoot -FromOffset $since.Length
+        Assert-Equal "nothing after the end" 0 $again.Lines.Count
+    }
+
+    # -----------------------------------------------------------------------
     # Static scans of the writer (NFR-202, NFR-203, NFR-204)
     # -----------------------------------------------------------------------
     Write-Host ""
@@ -817,16 +1089,16 @@ try {
     $tokens = $null; $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseFile($telemetryLibrary, [ref]$tokens, [ref]$errors)
 
-    Test-Case "FR-216 static: telemetry.ps1 parses, defines only Write-HarnessModelTelemetry, and keeps the five mandatory parameters first and in order" {
+    Test-Case "FR-216 static: telemetry.ps1 parses, defines the writer and the Phase 3 lock and reader helpers, and keeps the five mandatory parameters first and in order" {
         Assert-Equal "parse errors" 0 $errors.Count
         $functions = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true))
-        Assert-Equal "functions" "Write-HarnessModelTelemetry" (($functions | ForEach-Object { $_.Name }) -join ",")
-        $parameters = @($functions[0].Body.ParamBlock.Parameters)
+        Assert-Equal "functions" "Get-HarnessLongPath,Get-HarnessTelemetryMutexName,Enter-HarnessTelemetryLock,Exit-HarnessTelemetryLock,Add-HarnessTelemetryText,Read-HarnessModelTelemetry,Write-HarnessModelTelemetry" (($functions | ForEach-Object { $_.Name }) -join ",")
+        $parameters = @($functions[-1].Body.ParamBlock.Parameters)
         $mandatory = @($parameters | Where-Object { @($_.Attributes | Where-Object { $_ -is [System.Management.Automation.Language.AttributeAst] -and $_.NamedArguments.ArgumentName -contains "Mandatory" }).Count -gt 0 } | ForEach-Object { $_.Name.VariablePath.UserPath })
         Assert-Equal "mandatory parameters" "Root,Agent,Model,StartedAt,Status" ($mandatory -join ",")
         $names = @($parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
         Assert-Equal "first parameters in order" "Root,Agent,Model,StartedAt,Status,Response,ErrorMessage" (($names | Select-Object -First 7) -join ",")
-        Assert-Equal "parameter count" 23 $names.Count
+        Assert-Equal "parameter count" 24 $names.Count
     }
 
     Test-Case "NFR-202 static: the writer never reads Exception.Message for the record (the only use is the display-only warning in the catch)" {

@@ -88,7 +88,7 @@ None of these was applied, because each contradicts a decision or weakens a crit
 
 | ID | Choice | Why |
 |---|---|---|
-| RN-1 | Detection rule `promptChars > 7 * n` (FR-316), constant 7 in the engine | From WP-2E s4 and s5: healthy 3.93 to 5.43, cut prompt 10.49; a cut to half the window doubles the ratio, so 7 sits between 5.43 and 7.86. One observed truncation only: OQ-316, OQ-320 |
+| RN-1 | Detection rule `promptChars > 7 * n` (FR-316), constant 7 in the engine | From WP-2E s4 and s5: healthy 3.93 to 5.43, cut prompt 10.49; a cut to half the window doubles the ratio, so 7 sits between 5.43 and 7.86. One live truncation in WP-2E, three more in the owner's 2026-11-25 probe (FR-316 Probe): OQ-316, OQ-320 |
 | RN-2 | The new warning is `prompt_truncation_detected`; `possible_prompt_truncation` keeps its rule and is printed too | Changing the old rule would change Phase 2 goldens and cases; the owner asked for the old name to be loud |
 | RN-3 | The stage outcome does not change when truncation is detected | A failing rule needs more live evidence (OQ-316) |
 | RN-4 | `model_load_failed` is chosen from the Ollama JSON `error` text for a 5xx (three literal substrings, case-sensitive) | The data (WP-2E s13.1, s13.2) has no other discriminator; this is the one exception to Phase 2 NFR-202 "never from message text", noted in FR-317 |

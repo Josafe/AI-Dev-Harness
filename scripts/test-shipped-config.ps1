@@ -6,19 +6,22 @@
 .DESCRIPTION
     - Reads the real .ai\config.json (or, for mutation proofs only, the file
       given with -ConfigPath) and tests\fixtures\config-v2-phase1-baseline.json.
-    - The expectations are literals of this file (the four values FR-217 adds)
-      or come from the raw JSON of the frozen baseline, never from the code
-      under test. This file contains no model name.
+    - The expectations are literals of this file (the four values FR-217 adds
+      and the three calibrated values of D-211) or come from the raw JSON of
+      the frozen baseline, never from the code under test. This file contains
+      no model name.
     - Every leaf of the shipped file must equal the baseline leaf at the same
-      path, except for exactly the four added paths, which carry literal
+      path, except for exactly the four added paths and the two calibrated
+      reservedOutputTokens (review and deep, 8192 -> 6144), which carry literal
       expectations. A changed, removed or extra key anywhere fails.
-    - No budgetMode key may exist anywhere (OQ-201: the default stays warn; the
-      mode is decided in WP-2E).
+    - No budgetMode key may exist anywhere (OQ-201, D-211: the default stays
+      warn).
     - The registry must load with no warning, resolve every agent to the same
-      execution record as the baseline, and a reviewer-sized stub prompt must
-      get the mode "warn" through the registry. The status that
-      Test-AgentContextBudget returns for the stub is printed as DATA only: a
-      number that WP-2E will change is not asserted.
+      execution record as the baseline except reservedOutputTokens of the
+      agents on the review and deep profiles (literal 6144; fast stays 4096),
+      and a reviewer-sized stub prompt must get the mode "warn" through the
+      registry. The status that Test-AgentContextBudget returns for the stub
+      is printed as DATA only, not asserted.
     - No network, no Ollama, no child process. Nothing is written anywhere.
 #>
 param(
@@ -125,6 +128,15 @@ function Get-Leaf {
 # FR-217: the only paths the update may add, with their literal values.
 $addedPaths = @(".ollama.maxAttempts", ".ollama.retryBackoffSec", ".ollama.warmup", ".defaults.charsPerToken")
 
+# D-211 (WP-2E calibration): the only leaves allowed to differ from the Phase 1
+# baseline, as literals ("Type:value" of Get-JsonLeaves). Nothing else.
+$calibratedLeaves = [ordered]@{
+    ".profiles.review.reservedOutputTokens" = "Int32:6144"
+    ".profiles.deep.reservedOutputTokens"   = "Int32:6144"
+}
+# reservedOutputTokens of the profiles an agent can use, as literals (fast is unchanged).
+$expectedReserved = @{ "review" = 6144; "deep" = 6144; "fast" = 4096 }
+
 try {
     $shippedRaw = Get-RawJson $ConfigPath
     $baselineRaw = Get-RawJson $baselinePath
@@ -141,14 +153,14 @@ try {
         Assert-True "baseline has no budgetMode" (-not (@($baselineLeaves.Keys | Where-Object { $_ -match '(^|\.)budgetMode(\.|\[|$)' }).Count))
     }
 
-    Test-Case "AC-215 shipped: ollama.maxAttempts 2, retryBackoffSec 5, warmup false, defaults.charsPerToken 3.5 (value and JSON type)" {
+    Test-Case "AC-215 shipped: ollama.maxAttempts 2, retryBackoffSec 5, warmup false, defaults.charsPerToken 4.0 (value and JSON type)" {
         Assert-Equal "maxAttempts" "Int32:2" (Get-Leaf $shippedLeaves ".ollama.maxAttempts")
         Assert-Equal "retryBackoffSec" "Int32:5" (Get-Leaf $shippedLeaves ".ollama.retryBackoffSec")
         Assert-Equal "warmup" "Boolean:False" (Get-Leaf $shippedLeaves ".ollama.warmup")
         # A JSON number: Decimal in Windows PowerShell 5.1, Double in PowerShell 7; never a string.
         $charsPerToken = $shippedRaw.defaults.charsPerToken
         Assert-True "charsPerToken is a JSON number" (($charsPerToken -is [decimal]) -or ($charsPerToken -is [double]))
-        Assert-True "charsPerToken is 3.5" ([decimal]$charsPerToken -eq [decimal]3.5)
+        Assert-True "charsPerToken is 4.0 (D-211)" ([decimal]$charsPerToken -eq [decimal]4.0)
         Assert-True "warmup is the JSON boolean" ($shippedRaw.ollama.warmup -is [bool])
     }
 
@@ -157,10 +169,19 @@ try {
         Assert-Equal "budgetMode paths" 0 $found.Count
     }
 
-    Test-Case "AC-215 shipped: every other leaf is identical to the baseline, nothing added, nothing removed" {
+    Test-Case "AC-215 shipped: every other leaf is identical to the baseline except the two calibrated reservedOutputTokens (D-211), nothing added, nothing removed" {
         $removedOrChanged = @()
         foreach ($key in $baselineLeaves.Keys) {
             if (-not $shippedLeaves.ContainsKey($key)) { $removedOrChanged += "missing $key" }
+            elseif ($calibratedLeaves.Contains($key)) {
+                # The calibrated leaves must carry exactly the literal, and really differ from the baseline.
+                if (-not ($shippedLeaves[$key] -ceq $calibratedLeaves[$key])) {
+                    $removedOrChanged += "calibrated $key expected $($calibratedLeaves[$key]), got $($shippedLeaves[$key])"
+                }
+                if ($baselineLeaves[$key] -ceq $calibratedLeaves[$key]) {
+                    $removedOrChanged += "calibrated $key equals the baseline ($($baselineLeaves[$key])): the deviation is not in effect"
+                }
+            }
             elseif (-not ($shippedLeaves[$key] -ceq $baselineLeaves[$key])) {
                 $removedOrChanged += "changed $key ($($baselineLeaves[$key]) -> $($shippedLeaves[$key]))"
             }
@@ -177,11 +198,11 @@ try {
         Assert-Equal "maxAttempts" 2 $registry.ollama.maxAttempts
         Assert-Equal "retryBackoffSec" 5 $registry.ollama.retryBackoffSec
         Assert-True "warmup is the boolean false" (($registry.ollama.warmup -is [bool]) -and ($registry.ollama.warmup -eq $false))
-        Assert-Equal "charsPerToken" 3.5 $registry.defaults.charsPerToken
+        Assert-Equal "charsPerToken" 4 $registry.defaults.charsPerToken
         Assert-Equal "budgetMode" "warn" $registry.defaults.budgetMode
     }
 
-    Test-Case "AC-215 shipped: every agent resolves to the same execution record as the baseline (model, timeout, options, think, window)" {
+    Test-Case "AC-215 shipped: every agent resolves to the same execution record as the baseline, except reservedOutputTokens (literal 6144 on review and deep, 4096 on fast; D-211)" {
         $shippedRegistry = Get-HarnessRegistry -ConfigPath $ConfigPath
         $baselineRegistry = Get-HarnessRegistry -ConfigPath $baselinePath
         $agents = @($baselineRaw.agents.PSObject.Properties.Name)
@@ -190,7 +211,18 @@ try {
         foreach ($agent in $agents) {
             $expected = Resolve-HarnessExecution -Agent $agent -Registry $baselineRegistry
             $actual = Resolve-HarnessExecution -Agent $agent -Registry $shippedRegistry
-            Assert-Equal "$agent record" ($expected | ConvertTo-Json -Depth 10 -Compress) ($actual | ConvertTo-Json -Depth 10 -Compress)
+            # Every field except reservedOutputTokens, one by one (same field list, same values).
+            $expectedNames = @($expected.PSObject.Properties.Name)
+            Assert-Equal "$agent record fields" ($expectedNames -join ",") (@($actual.PSObject.Properties.Name) -join ",")
+            Assert-True "$agent record has reservedOutputTokens" ($expectedNames -contains "reservedOutputTokens")
+            foreach ($name in $expectedNames) {
+                if ($name -eq "reservedOutputTokens") { continue }
+                Assert-Equal "$agent $name" ($expected.$name | ConvertTo-Json -Depth 10 -Compress) ($actual.$name | ConvertTo-Json -Depth 10 -Compress)
+            }
+            # reservedOutputTokens: literals by the profile the baseline gives the agent.
+            $profileName = [string]$baselineRaw.agents.$agent.profile
+            Assert-True "$agent profile '$profileName' is one of fast, review, deep" ($expectedReserved.ContainsKey($profileName))
+            Assert-Equal "$agent reservedOutputTokens" $expectedReserved[$profileName] $actual.reservedOutputTokens
             Assert-Equal "$agent model" $expected.model $actual.model
             Assert-Equal "$agent timeoutSec" $expected.timeoutSec $actual.timeoutSec
             Assert-Equal "$agent think" $expected.think $actual.think
@@ -202,7 +234,7 @@ try {
     Test-Case "AC-215 shipped: a reviewer-sized stub prompt gets the mode warn (status recorded as data, not asserted)" {
         $registry = Get-HarnessRegistry -ConfigPath $ConfigPath
         $record = Resolve-HarnessExecution -Agent "spec-reviewer" -Registry $registry
-        # About 25,600 characters is roughly the fixed text of the reviewer at charsPerToken 3.5.
+        # About 25,600 characters is roughly the fixed text of the reviewer (shipped charsPerToken 4.0).
         $budget = Test-AgentContextBudget -Execution $record -Registry $registry -System ("x" * 20000) -Prompt ("y" * 5638)
         Assert-Equal "mode" "warn" $registry.defaults.budgetMode
         Assert-True "the budget result has a status" (-not [string]::IsNullOrEmpty([string]$budget.status))

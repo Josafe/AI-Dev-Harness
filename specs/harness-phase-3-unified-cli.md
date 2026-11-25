@@ -1,403 +1,470 @@
 # Specification
 
 **Title:** Harness modernization, Phase 3: unified CLI, run manifests and safe concurrent runs
-**Status:** Draft, revision 1 (2026-11-25). Written unattended; nothing is approved. Every choice beyond the roadmap is an Open Question with a RECOMMENDATION. Phases 4 to 6 are not designed here.
-**Applies to:** AI-Dev-Harness. Baseline: tag `phase2-done` (Phase 2 spec Revision 3.4).
-**Requirement ID scheme:** `FR-3nn`, `NFR-3nn`, `AC-3nn`. Earlier IDs are cited as "Phase 2 FR-216" (`specs/harness-phase-2-shared-engine.md`); XR-nn, O-nn, R-nn are the roadmap's (`docs/roadmap/modernization-roadmap.md`); DF-2nn are Phase 2 deferrals; I-n and N-n are findings of `docs/audits/2026-11-26-phase2-final-qa.md`.
+**Status:** Draft, revision 2 (2026-11-26). Applies `docs/audits/2026-11-25-phase3-spec-review.md` and the owner decisions D-301 to D-314; finding table: `docs/audits/2026-11-26-phase3-spec-rev2-notes.md`. Not approved. Choices beyond the roadmap and the decisions are Open Questions with a RECOMMENDATION. Phases 4 to 6 are not designed.
+**Applies to:** AI-Dev-Harness, baseline tag `phase2-calibrated` (`ec05225`, Phase 2 spec revision 3.5).
+**IDs:** `FR-3nn`, `NFR-3nn`, `AC-3nn`, `D-3nn` (owner decisions), `OQ-3nn`, `RK-3nn`, `A-3nn`. "Phase 2 FR-216" is `specs/harness-phase-2-shared-engine.md`; XR-nn, O-nn, R-nn and "roadmap FR-3nn" are `docs/roadmap/modernization-roadmap.md`; "WP-2E s5" is a section of `docs/audits/2026-11-25-phase2-wp2e-resume.md`. FR-312 and AC-318 are cut (D-301); the numbers are not reused.
 
 ## Goal
 
-Add one entry point, `scripts/harness.ps1`, over the existing scripts. Every workflow run gets a run directory and a versioned manifest (with a schema and a validator) carrying what Phase 2 now records: profile, model, attempts, warnings, categories, durations, call ids, artifact paths. Failures and unsupported stages end with a stable exit code and a machine-readable status. A run is a short-lived foreground process that checkpoints its manifest, is inspected with `status` and continued with `-Resume`; background execution is left to Claude Code. Concurrent runs become safe (telemetry lock, artifact lock). The deprecated wrappers are deleted and the largest suite is split. The legacy scripts keep their interfaces.
+One entry point, `scripts/harness.ps1`, over the existing scripts. Every workflow run gets a run directory and a validated manifest and ends with a stable exit code. A run is a short-lived foreground process that checkpoints its manifest; background execution is Claude Code's. Concurrent runs become safe. The WP-2E findings become checkable behavior: a truncation signal that works, a load failure that is not retried, a `doctor` preflight. The deprecated wrappers go and the largest suite is split. Legacy scripts keep their interfaces. Two stages with a gate: **3A** (infrastructure independent of the CLI design) and **3B** (the CLI).
 
 ## Context
 
-**Origin.** The roadmap's Phase 3 section, XR-03 (remainder), XR-06 to XR-08, XR-10, O-07, O-11, O-12, O-14, O-18, R-07; Phase 2 DF-202, DF-203 and "Out of scope"; sections 2, 9 and 10 of the Phase 2 final QA; the owner's task of 2026-11-25.
+**Current behavior** (FACT, at `phase2-calibrated`; WP-2E s5, s9, s13):
 
-**Current behavior** (FACT, at `phase2-done`, `8c26f72`):
+- `specify.ps1` (382 lines) runs four scripts with `&` (`-RunnerScript`, `-ValidatorScript`, `-ReviewerScript`, `-ReviserScript`), writes `<harness>\specs\<Name>.md`, `.review.md`, `.revised-vN.md`, `.revised-vN.review.md`, exits 0 (PASS), 1 (FAIL after 3 revisions), 2 (error), 3 (insufficient input). It has no `-Profile`, passes no `-ContextFile`, never resets `$LASTEXITCODE`.
+- `run-agent.ps1` prints its answer to the success stream; `revise-spec.ps1` **throws** on failure; `review-spec.ps1` exits 0, 1 or 2; `scan-repository.ps1` and `build-context.ps1` throw and set no exit code. The telemetry writer has no lock (`Add-Content`): overlapping processes lose records.
+- Nine `AC-216` cases of `test-engine-callsites.ps1` (2,081 lines, 160 cases, about 164 s) use or assert the unused wrappers `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` (lines 1192, 1211, 1225, 1233, 1243, 1254, 1266, 1276, 2044), with a wrapper driver (about lines 335 to 375), a `Write-Host` exemption and a pinned list in `test-agent-prompts.ps1`.
+- Live (WP-2E): Ollama **truncates an overlong prompt silently**, the shipped `possible_prompt_truncation` rule fires on healthy prompts and no script prints it, and CUDA model-load faults were retried by the 5 s retry with half success (FR-316, FR-317).
 
-- `specify.ps1` (382 lines) is the only workflow driver. It calls four scripts with `&` in its own process (`-RunnerScript`, `-ValidatorScript`, `-ReviewerScript`, `-ReviserScript`, each defaulting to its sibling): `run-agent.ps1 -Agent spec`, `validate-spec.ps1`, then up to 3 rounds of `review-spec.ps1`, `revise-spec.ps1` and validation. It writes `<harness>/specs/<Name>.md`, `.review.md`, `.revised-vN.md`, `.revised-vN.review.md`. Exit 0 (PASS), 1 (FAIL after 3 revisions), 2 (any error, including a failed validation), 3 (insufficient input). It passes no `-ContextFile` and has no `-Profile`. `review-spec.ps1` exits 0, 1 or 2.
-- The three agent scripts use the engine and write one telemetry record per call (`run_id` from `AI_HARNESS_RUN_ID`, else a GUID; `call_id`, `profile`, `model`, `model_source`, `attempts`, `error_category`, `http_status`, `warnings`, `timeout_sec`, `context_window`, `est_prompt_tokens`, `duration_ms`; 31 columns). Telemetry has no workflow, stage or artifact field (Phase 2 OQ-205).
-- Only `run-agent.ps1` accepts `-ContextFile`; the reviewer and reviser builders have no context part.
-- The telemetry writer has no lock: 2 overlapping processes kept 1 to 14 of 80 records, 4 kept 6 to 8 of 160 (DF-202, I-6).
-- `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` are unused (DF-203); 8 `AC-216` cases of `test-engine-callsites.ps1` (2,081 lines, 160 cases, about 164 s), a `Write-Host` exemption and a pinned list in `test-agent-prompts.ps1` cover them.
-- `scan-repository.ps1` does not exclude `.ai-harness/`. There is no `runs/`, manifest, CLI or JSON status, and `.gitignore` has no `runs/`.
+**Owner decisions** (2026-11-26; applied, not reopened):
 
-**Hooks left for Phase 4** (its design is out of scope): the exit-code table and the `RUN_ID:` and `MANIFEST:` lines; `-Json` on the read-only commands (so a permission rule can allow them); a caller-chosen `-RunId`; `trust` on every artifact and an empty `verification[]` (Phase 6); `process.background` (false) with the process id and start time (a later `cancel`).
-
-**Out of scope.** Phases 4 to 6. A detached `-Background`, `cancel`, heartbeats, a queue (OQ-302). Saved prompts, raw outputs and `console.log` (OQ-309). New telemetry columns (OQ-304). Run pruning `[O]`. The live validation WP-2E.
+- **D-301:** `-Resume` (FR-312, AC-318, WP-3H of revision 1) is cut and deferred; a killed run is started again.
+- **D-302:** no `-Background`, `cancel` or `console.log`; rely on Claude Code's background execution. **Roadmap deviation:** XR-06 detached runs and cancel and roadmap Phase 3 AC-302 leave Phase 3; the XR-04 shared sensitive-pattern policy and the XR-03 derived context budget are deferred (OQ-322).
+- **D-303:** `develop` exits 4 until Phase 5. Legacy `specify.ps1` writes no manifest and keeps its exit codes.
+- **D-304:** two stages in one spec: 3A (telemetry lock, wrapper deletion, suite split, engine signals), a gate, 3B (the CLI).
+- **D-305** names and overwrite (FR-319); **D-306** `-Include` is one comma-separated string; **D-307** a target equal to the harness root is refused and targets, `.ai-harness`, `specs` are not reparse points; **D-308** telemetry mutex plus `FileStream` append, no `Local\` fallback (FR-311); **D-309** run claim and `File.Replace` manifest (FR-304, FR-305); **D-310** no stage-script options, `$args` parser (FR-302); **D-311** stage contract and outcome table (FR-303, FR-308); **D-312** schema enums equal XR-08 (FR-305); **D-313** WP-2E findings are FR-316 to FR-318, the model-switch policy is OQ-317; **D-314** kept: telemetry join by `run_id` and `call_id` without new columns, no job daemon, wrappers deleted in 3A, suite split by script.
+**Other deviations:** CLI exit 1 for a failed validation against legacy 2 (XR-01); categories `artifact_exists`, `artifact_in_use`, `stage_failed`, `model_load_failed` added; no `prompts\` or `outputs\*.raw.md`. **Hooks for Phase 4** (not designed): exit codes, `RUN_ID:` and `MANIFEST:` lines, `-Json`, a caller `-RunId`, `trust`, empty `verification[]`, `process.background`. **Deferred:** D-301 and D-302 items; telemetry columns; run pruning `[O]`; a model-switch policy; `num_ctx` in the warm-up key, a run-time `charsPerToken`, a load-failure telemetry column (WP-2E s13.6 to 13.8).
 
 ## Functional Requirements
 
-### FR-301 — One entry point and its commands
+### FR-301 - One entry point and its commands
 
 **Source:** USER
 
-`scripts/harness.ps1 <command> [options]` is the single entry point.
+`scripts/harness.ps1 <command> [options]`:
 
-| Command | Does | Manifest |
+| Command | Does | Run and manifest |
 |---|---|---|
-| `specify` | the workflow of `specify.ps1` (FR-303) | yes |
-| `review`, `revise` | one `review-spec.ps1` or `revise-spec.ps1` call on a spec in the target | yes |
+| `specify` | the workflow of `specify.ps1` (FR-303); optional `-LoadCheck` (FR-318) | yes |
+| `review`, `revise` | one `review-spec.ps1` call; one `revise-spec.ps1` call plus validation (FR-319) | yes |
 | `scan`, `context` | `scan-repository.ps1`; scan plus `build-context.ps1`, into the run directory (FR-313) | yes |
-| `validate` | `validate-spec.ps1 -SpecFile -Mode`, exit code passed through (0, 1, 3) | no |
-| `status`, `list`, `stages`, `config`, `doctor` | read-only (FR-309) | no |
-| `architecture`, `plan`, `qa`, `code-review`, `develop` | unsupported stages (FR-308) | yes |
+| `validate` | `validate-spec.ps1 -SpecFile -Mode`; exit code passed through (0, 1, 3); a throw is 2 | no |
+| `status`, `list`, `stages`, `config`, `doctor` | read-only (FR-309, FR-318) | no |
+| `architecture`, `plan`, `qa`, `code-review`, `develop` | unsupported, exit 4 (FR-308) | yes |
 
-A command that writes a file creates a run and a manifest; one that only reads never does. An unknown command is `invalid_arguments` (exit 2, no manifest; OQ-308). `develop` stays unsupported until Phase 5 (OQ-306). Stages run in the CLI's own process with `&`; the only other process it starts is read-only `git` (FR-305).
+Stages run in the CLI's process with `&`; the only other processes are read-only `git` (`--no-optional-locks`) and, for `doctor`, `nvidia-smi`. An argument error never creates a manifest.
 
-### FR-302 — Parameters and validation
-
-**Source:** USER
-
-Workflow commands take `-TargetPath`, `-Name`, `-Mode` (`requirements`, `baseline`, `documentation`; default `requirements`), `-Task` or `-TaskFile` (exactly one, UTF-8), `-Include <relative paths>` (FR-313), `-Model` or `-Profile` (both is `invalid_arguments:`, as Phase 1 FR-104), `-RunId`, `-Resume`, and the four test seams `-RunnerScript`, `-ValidatorScript`, `-ReviewerScript`, `-ReviserScript` (as in `specify.ps1`). `review` and `revise` also take `-Revision N` (0 by default for `review`; at least 1 and required for `revise`) and read and write only `<Name>`, `<Name>.revised-vN` and their `.review.md` files in `<TargetPath>\.ai-harness\specs\`; there is no free output path. Read-only commands take `-Json`, `-RunId`, `-Last`, `-Agent` where meaningful. `-TargetPath` is required by every command that writes an artifact (O-07, OQ-301), must be an existing folder, and is canonicalized with `GetFullPath`; there is no current-folder default. An option of another command, a stray positional argument, a bad `-Name` (the `specify.ps1` pattern) or `-RunId` (FR-304) and a missing required option are `invalid_arguments` (exit 2). The harness's own error lines start with a fixed token (`invalid_arguments:`, `registry_invalid:`); tests match only those (NFR-303).
-
-### FR-303 — One shared specify workflow; legacy scripts keep their interfaces
+### FR-302 - Parameters: a literal table parsed by the script
 
 **Source:** USER
 
-The review and revision loop moves to `scripts/lib/workflow.ps1` as `Invoke-SpecifyWorkflow`, called by `specify.ps1` and by `harness.ps1 specify`. It takes the four script paths, `Mode`, `Task`, `Name`, an output directory, optional `-Model` or `-Profile`, an optional context file and an optional stage hook. It prints the console lines `specify.ps1` prints today, never calls `exit`, and returns `{ outcome, category, stage, legacyExitCode, cliExitCode }`. The hook gets `stage_begin` (id, kind, agent, attempt) and `stage_end` (id, status, exit code, output path, verdict, reason) and uses only its parameters (the engine's hook rule). `specify.ps1` keeps its parameters, folder (`<harness>\specs\`), file names, `maxRevisions = 3` and exit codes 0 to 3, and passes no hook, run directory or context (OQ-307). Its only addition is an optional `-Profile`, passed to the three agent scripts only when bound (Phase 2 "Out of scope", OD-108). The two front ends map one outcome to different codes: a failed structural validation is 2 for the legacy script and 1 for the CLI (FR-308, OQ-310).
+`harness.ps1` has no `param` block, `[CmdletBinding()]`, `[Parameter()]` or validation attribute, so PowerShell never rejects an input first (localized text, exit 1). It parses `$args` against this table. An option is `-Name value` (the next element, whatever it starts with); `-Json`, `-Overwrite`, `-LoadCheck` are switches. Names match case-insensitively and must be complete.
 
-### FR-304 — Run identity, run directory, artifact locations
+| Command | Required | Optional |
+|---|---|---|
+| `specify` | `-TargetPath -Name`, one of `-Task`/`-TaskFile` | `-Mode -Include -Model -Profile -RunId -Overwrite -LoadCheck` |
+| `review` | `-TargetPath -Name`, one of `-Task`/`-TaskFile` | `-Revision -Mode -Model -Profile -RunId -Overwrite` |
+| `revise` | `-TargetPath -Name -Revision`, one of `-Task`/`-TaskFile` | `-Mode -Model -Profile -RunId -Overwrite` |
+| `scan` | `-TargetPath` | `-RunId` |
+| `context` | `-TargetPath -Include` | `-RunId` |
+| `validate` | `-SpecFile` | `-Mode` |
+| `status` | `-RunId` | `-Json` |
+| `list` | none | `-Last -Json` |
+| `stages` | none | `-Json` |
+| `config` | none | `-Agent -Model -Profile -Json` |
+| `doctor` | none | `-Json -LoadCheck` |
+| `architecture plan qa code-review develop` | none | `-TargetPath -RunId` |
+
+Values: `-Mode` is `requirements`, `baseline` or `documentation` exactly (default `requirements`); `-Revision` digits (default 0 for `review`, at least 1 for `revise`); `-Last` a positive integer; exactly one of `-Task`/`-TaskFile` (UTF-8, read with .NET); `-Model` with `-Profile` invalid; `-Name` per FR-319, `-RunId` per FR-304, `-Include` per FR-313. `-TargetPath` must exist, be a folder, not be a reparse point and not equal or contain the harness root (OQ-314); it is resolved against the PowerShell location with `GetFullPath`, trailing separators removed, 8.3 names expanded (OQ-301: no default).
+
+Every bad input (unknown command or option, option of another command, option without a value, duplicate, leftover positional, incomplete name, missing required option, bad value) exits **2** with the first output line `ERROR: invalid_arguments: <text>`; tests match the token only (NFR-303). The stage scripts and the hook are not options: `harness.ps1` only parses `$args` and calls `Invoke-HarnessCli -Command -Options [-StageScripts] [-Hook]` in `lib\cli.ps1`, the entry point tests use with mock stages in a child process (D-310).
+
+### FR-303 - One shared workflow, a stage contract, an unchanged legacy front end
 
 **Source:** USER
 
-The run id is `-RunId`, else a valid `AI_HARNESS_RUN_ID`, else `<UTC yyyyMMddTHHmmssZ>-<8 lowercase hex>`. A given id matches `^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$`; an invalid environment value is ignored with the warning `invalid_run_id_env`. `<harness>\runs\<runId>\` is created with an existence check; an existing id is `invalid_arguments` unless `-Resume` (FR-312). The CLI sets `$env:AI_HARNESS_RUN_ID` to the id for its stages and restores the old value in a `finally`, so telemetry `run_id` equals the manifest `runId` (XR-01).
+The loop moves to `scripts/lib/workflow.ps1` as `Invoke-SpecifyWorkflow`, used by `specify.ps1` and the CLI. It takes the four script paths, `Mode`, `Task`, `Name`, an output directory, optional `-Model` or `-Profile`, a context file, a stage hook and a `-Result` hashtable; it prints the console lines `specify.ps1` prints today, never calls `exit`, and fills `-Result` with `{ outcome, category, stage, legacyExitCode, cliExitCode }` (FR-308). `review` and `revise` call the same stage helpers under the same contract.
+
+**Stage contract.** A stage is called as a statement and its success-stream output passes through, so the result never travels in the pipeline. `$global:LASTEXITCODE` is set to `$null` before each stage; `$null` counts as 0 except for the reviewer, where it is unexpected. A stage that **throws** is a failed stage: `stage_end` gets exit code null, and the legacy front end rethrows so the `trap` of `specify.ps1` prints and exits 2 as today. `scan-repository.ps1` and `build-context.ps1` have no exit codes: success is "no throw, and the output file exists and is not empty". The hook gets `stage_begin` (id, kind, agent, attempt) and `stage_end` (id, status, exit code, output path, verdict, reason) and uses only its parameters; a throwing hook is `internal_error`.
+
+`specify.ps1` keeps its parameters, folder, file names, `maxRevisions` 3, exit codes and console lines, and passes no hook, run directory or context (D-303). Its only addition is an optional `-Profile`, passed to the three agent scripts only when bound.
+
+### FR-304 - Run identity, run directory, locations
+
+**Source:** USER
+
+The run id is `-RunId`, else a valid `AI_HARNESS_RUN_ID`, else `<UTC yyyyMMddTHHmmssZ>-<8 lowercase hex>`. A given id matches `\A[A-Za-z0-9](?:[A-Za-z0-9_-]|\.(?!\z)){0,63}\z` and its text before the first dot is not a device name (`CON`, `PRN`, `AUX`, `NUL`, `COM1`-`COM9`, `LPT1`-`LPT9`, any case). An invalid environment value is ignored with the warning `invalid_run_id_env`.
+
+`<harness>\runs\<id>\` is claimed by `CreateDirectory` and then creating `.claim` in it with `FileMode.CreateNew`; the creator owns the id. A lost claim on `-RunId` is `invalid_arguments`. `AI_HARNESS_RUN_ID` is a correlation id (it groups calls today): when its directory exists the CLI appends `-<4 lowercase hex>`, with a new suffix until the claim succeeds (at most 69 characters),, warns `run_id_env_reused` and never fails. The CLI sets `$env:AI_HARNESS_RUN_ID` to the final id for its stages and restores it in a `finally`, so telemetry `run_id` equals the manifest `runId`.
 
 ```text
 <target>\.ai-harness\specs\   <Name>.md, .review.md, .revised-vN.md, .revised-vN.review.md
-<harness>\runs\<runId>\       manifest.json, inputs\task.md, inputs\scan.json, inputs\context.txt
+<harness>\runs\<id>\          .claim, manifest.json, inputs\task.md, inputs\scan.json, inputs\context.txt, replaced\
 <harness>\logs\               model-calls.jsonl, .csv (unchanged)
 ```
 
-Inside a target the harness writes only below `<target>\.ai-harness\`. `runs/` is added to `.gitignore`. `inputs\task.md` is the only place with the task text (O-14). `console.log`, `prompts\` and `outputs\*.raw.md` of XR-07 are not created (OQ-309).
+In a target the harness writes only below `<target>\.ai-harness\`. `runs/` is added to `.gitignore`. `inputs\task.md` (UTF-8, no BOM) is the only place with the task text (O-14).
 
-### FR-305 — The run manifest (XR-08)
+### FR-305 - The run manifest (XR-08)
 
 **Source:** USER
 
-`runs\<runId>\manifest.json`: UTF-8 without BOM, `ConvertTo-Json -Depth 10`, `schemaVersion` 1. It is created before the first stage (`running`, `exitCode` null), rewritten at every stage event (a checkpoint) and at the end, each time by writing a temp file in the same folder and then `File.Replace` (`Move` when the target does not exist). Readers retry up to 5 times, 20 ms apart. The final write precedes the `MANIFEST:` line (FR-308).
+`runs\<id>\manifest.json`: UTF-8 without BOM, `ConvertTo-Json -Depth 10`, `schemaVersion` 1. Created before the first stage (`running`, `exitCode` null), rewritten at every stage event and at the end, before the `MANIFEST:` line: write a temp file in the same folder, then `File.Replace(temp, manifest, [NullString]::Value)` (`Move` if absent), retried 50 times 20 ms apart. A reader opens with `FileShare.ReadWrite, Delete` and retries 25 times 20 ms apart on `IOException` **and** `FileNotFoundException`. Every string in the manifest comes from .NET I/O or is cast to `[string]` (`ConvertTo-Json` of a `Get-Content` string hangs).
 
 | Field | Content |
 |---|---|
-| top level | `schemaVersion`, `runId`, `workflow`, `status` (`running`, `succeeded`, `failed`, `needs_input`), `exitCode`, `createdAtUtc`, `startedAtUtc`, `endedAtUtc`, `resumeCount`, `warnings[]` (union, no duplicates), `error` (null, or as a stage `error`) |
-| `harness` | `root`, `gitCommit`, `gitDirty` (null without `git` or a repository; read-only `rev-parse` and `status --porcelain`), `registrySchemaVersion`, `registrySha256` (of `.ai\config.json`), `ollamaUrl` |
-| `target` | `root`, `artifactDir`; null with no target |
-| `process` | `pid`, `processStartUtc`, `background` (false) |
+| top level | `schemaVersion`, `runId`, `workflow`, `status`, `exitCode`, `createdAtUtc`, `startedAtUtc`, `endedAtUtc`, `warnings[]` (union, no duplicates), `error` |
+| `harness` | `root`, `gitCommit`, `gitDirty` (null without git; `git --no-optional-locks rev-parse HEAD`, `status --porcelain`), `registrySchemaVersion`, `registrySha256`, `ollamaUrl` |
+| `target`, `process` | `root`, `artifactDir` (null with no target); `pid`, `processStartUtc`, `background` (false) |
 | `request` | `name`, `mode`, `maxRevisions` (3), `taskSha256`, `taskFile`, `include[]`, `revision`, `overrides {model, profile}` |
 | `context` | null, or `file`, `sha256`, `chars`, `files[] {path, sha256, sizeBytes}` |
-| `stages[]` | `id`, `kind` (`agent`, `deterministic`, `unsupported`), `agent`, `attempt`, `status` (`pending`, `running`, `succeeded`, `failed`, `skipped`, `unsupported`), `reason`, `startedAtUtc`, `durationMs` (wall time), `exitCode`, `resolution {profile, model, modelSource, timeoutSec}`, `budget {contextWindow, estimatedPromptTokens, withinBudget}`, `callId`, `engineAttempts`, `callDurationMs`, `warnings[]`, `contextSha256`, `verdict` (`PASS`, `FAIL`, null), `output {path, sha256}`, `reused`, `error {category, engineCategory, message, retryable, httpStatus}` |
-| `artifacts[]` | `role`, `path` (relative), `sha256`, `trust` (`untrusted-draft` for model output, `deterministic-check` for the context file; `verified-by-command` is not produced) |
-| `verification[]` | empty in Phase 3 (Phase 6) |
+| `stages[]` | `id`, `kind`, `agent`, `attempt`, `status`, `reason`, `startedAtUtc`, `durationMs`, `exitCode`, `resolution {profile, model, modelSource, timeoutSec}`, `budget {contextWindow, estimatedPromptTokens, withinBudget}`, `callId`, `engineAttempts`, `callDurationMs`, `warnings[]`, `contextSha256`, `verdict` (`PASS`, `FAIL`, null), `output {path, sha256}`, `error {category, engineCategory, message, hint, retryable, httpStatus}` |
+| `artifacts[]` | `role`, `root` (`target` or `run`), `path` (relative to it), `sha256`, `trust` |
+| `verification[]` | empty (Phase 6) |
 
-`attempt` is the position in the review loop (1-based); `engineAttempts` is the engine's HTTP attempts (telemetry `attempts`), so a retried call is visible (final QA section 10). Stage ids: `scan`, `context`, `spec-generate`, `spec-validate`, `spec-review`, `spec-revise`, `revised-validate`. The run states `queued`, `cancelled` and `abandoned` are never written (`abandoned` is derived, FR-309). A review that returns FAIL is a `succeeded` stage with verdict `FAIL`. A planned stage not reached when the run ends is `skipped` with the reason `dependency failed: <id>`; the next loop round's stages are appended only after a FAIL verdict. `budget.reservedOutputTokens` of the roadmap example is not carried (OQ-304).
+**States.** The schema enums are the XR-08 lists: run `queued`, `running`, `succeeded`, `failed`, `needs_input`, `cancelled`, `abandoned`; stage `pending`, `running`, `succeeded`, `failed`, `skipped`, `unsupported`, `cancelled`; `trust` `untrusted-draft`, `deterministic-check`, `verified-by-command`. **The CLI writes only** run `running`, `succeeded`, `failed`, `needs_input`; stage `pending`, `running`, `succeeded`, `failed`, `skipped`, `unsupported`; `trust` `untrusted-draft` (model output), `deterministic-check` (context file). `abandoned` is derived (FR-309). `kind` is `agent`, `deterministic` or `unsupported`.
 
-### FR-306 — Manifest schema and validator
+**Stages.** Ids: `load-check`, `scan`, `context`, `spec-generate`, `spec-validate`, `spec-review`, `spec-revise`, `revised-validate`. `attempt` is the loop's 1-based counter (round k for `spec-review`, revision k for `spec-revise` and `revised-validate`, else 1); `engineAttempts` is the engine's HTTP attempts. A FAIL review is a `succeeded` stage with verdict `FAIL`; next-round stages are appended only after a FAIL. At the end each planned stage not reached is `skipped` with `dependency failed: <id>` or, when none failed (`registry_invalid`, `agent_not_found`, `artifact_exists`), `not reached: <category>`. `error.retryable` is true only when `engineCategory` is `http_5xx` or `transport_reset`; `error.hint` is the engine's fixed hint for `engineCategory`.
+
+### FR-306 - Manifest schema and validator
 
 **Source:** USER
 
-`scripts/lib/run-manifest.schema.json` is the schema of FR-305, in a documented subset of JSON Schema (`type`, `required`, `enum`, `properties`, `items`, `pattern`, `minimum`). `lib\manifest.ps1` has `Test-HarnessManifest -Manifest <object or JSON text> [-SchemaPath]`, returning `{ valid, errors[] }` with errors `<JSON path>: <code>`; codes `missing_required`, `wrong_type`, `not_in_enum`, `pattern_mismatch`, `below_minimum`, `unsupported_schema_version`, `invariant_*`. Required keys, types and enums come from the schema file only. Invariants: a terminal run has `exitCode` 0 to 4 and `endedAtUtc`; `succeeded` has `exitCode` 0 and no failed stage; `failed` and `needs_input` have an `error`; (`id`, `attempt`) is unique; `artifacts[].path` is relative without `..`. Every manifest the CLI writes is valid, after any failure too.
+`scripts/lib/run-manifest.schema.json` uses a documented subset of JSON Schema: `type` (a name or an array, for nullable fields), `required`, `enum`, `properties`, `items`, `pattern`, `minimum`; unknown properties are allowed; comparisons are ordinal (`-ceq`, `-ccontains`, `-cmatch`). `lib\manifest.ps1` has `Test-HarnessManifest -Manifest <object or JSON text> [-SchemaPath]` returning `{ valid, errors[] }`, errors `<path>: <code>` with the path literal as `$.stages[0].status`; codes `missing_required`, `wrong_type`, `not_in_enum`, `pattern_mismatch`, `below_minimum`, `unsupported_schema_version`, `invariant_*`. Keys, types and enums come from the schema file only. Invariants: a terminal run has `exitCode` 0 to 4 and `endedAtUtc`; `succeeded` has `exitCode` 0 and no failed stage; `failed` and `needs_input` have an `error`; (`id`, `attempt`) is unique; `artifacts[].path` is relative, without `..` or a drive. Every manifest the CLI writes is valid, after any failure too.
 
-### FR-307 — Telemetry correlation without a telemetry change
+### FR-307 - Telemetry correlation without a telemetry change
 
 **Source:** ASSUMPTION
 
-The manifest is joined to telemetry by `run_id` (= `runId`) and `call_id`; no column is added (OQ-304). At `stage_begin` of an agent stage the CLI notes the byte length of `logs\model-calls.jsonl`; at `stage_end` it reads the bytes appended since (share mode ReadWrite), keeps the parsable lines whose `run_id` is the run id, and fills the stage from the last: `callId`, `engineAttempts`, `callDurationMs`, `warnings` (split on `;`), `resolution` (`profile`, `model`, `model_source`, `timeout_sec`), `budget` (`context_window`, `est_prompt_tokens`; `withinBudget` false when `budget_exceeded` is a warning), `error.engineCategory`, `error.httpStatus`. No record: `callId` null and the warning `telemetry_record_missing`. Several: the last wins and `telemetry_multiple_records` is added. `error.category` is the roadmap name from this table, which is Phase 2 FR-211's mapping (OQ-305): `transport_unreachable` to `ollama_unreachable`; `http_4xx`, `http_5xx`, `transport_reset`, `transport_other` to `http_error`; `empty_response`, `thinking_budget_exhausted` to `empty_output`; `format_invalid` to `invalid_output_format`; `timeout`, `context_budget_exceeded`, `model_not_installed` unchanged. Detail text comes only from the telemetry `error` column (single-line, cut at 500) or from fixed harness wording, never from an exception message.
+The manifest joins telemetry by `run_id` (= `runId`) and `call_id`. At `stage_begin` of an agent stage the CLI notes the byte length of `logs\model-calls.jsonl`; at `stage_end` it reads the bytes appended since. Both reads hold the telemetry mutex (FR-311), open with `FileShare.ReadWrite`, retry an `IOException` and drop a leading BOM; on a lock timeout they read unlocked and add the warning `telemetry_lock_timeout`. From the parsable lines with the run's `run_id`, the last fills the stage: `callId`, `engineAttempts` (`attempts`), `callDurationMs`, `warnings` (split on `;`), `resolution`, `budget` (`withinBudget` false when `budget_exceeded` is a warning), `error.engineCategory`, `error.httpStatus`. No record: `callId` null and `telemetry_record_missing`; several: the last wins and `telemetry_multiple_records` is added.
 
-### FR-308 — Exit codes, categories, unsupported stages, output protocol (XR-10)
+`error.category` maps from the engine's (Phase 2 FR-211): `transport_unreachable` to `ollama_unreachable`; `http_4xx`, `http_5xx`, `transport_reset`, `transport_other` to `http_error`; `empty_response`, `thinking_budget_exhausted` to `empty_output`; `format_invalid` to `invalid_output_format`; `timeout`, `context_budget_exceeded`, `model_not_installed`, `model_load_failed` unchanged. `error.message` is the telemetry `error` column (one line, at most 500) or fixed harness wording.
 
-**Source:** USER
-
-Exit codes: 0 success; 1 workflow failure (`validation_failed`, `review_failed` for `harness review` with a FAIL verdict, `max_revisions_reached`); 2 execution error; 3 `needs_human_input`; 4 unsupported stage. `manifest.exitCode` equals the process exit code. `error.category` is one of: `invalid_arguments`, `registry_invalid`, `agent_not_found` (an `.ai\agents\<agent>.md` is missing; checked before the first stage), `ollama_unreachable`, `model_not_installed`, `context_budget_exceeded`, `context_invalid`, `timeout`, `http_error`, `empty_output`, `invalid_output_format`, `validation_failed`, `review_failed`, `max_revisions_reached`, `needs_human_input`, `unsupported_stage`, `artifact_in_use` (FR-311), `stage_failed` (a stage exited non-zero and wrote no record; fixed wording naming the stage and code), `internal_error`; `cancelled` and `abandoned` are reserved. `architecture`, `plan`, `qa`, `code-review` and `develop` exit 4 with one stage of kind `unsupported`, status `unsupported`, run status `failed`, and the message "No local agent implements '<stage>'; perform it in Claude Code or manually." The harness never simulates a stage.
-
-Workflow commands print `RUN_ID: <runId>` as the first line after argument validation and `MANIFEST: <absolute manifest path>` as the last stdout line, on success and on every failure once a run directory exists. A failure before that (unknown command, bad `-RunId`, `runs\` not writable) prints one `ERROR: <token>: <text>` line, exits 2 and writes no manifest. Failures keep partial artifacts and earlier stage records. The CLI never prompts or reads stdin (NFR-301). Legacy scripts keep their codes.
-
-### FR-309 — Read-only commands and derived status
+### FR-308 - Exit codes, categories, outcome table, output protocol (XR-10)
 
 **Source:** USER
 
-`-Json` makes a read-only command print exactly one JSON line and nothing else. `stages` lists each command and stage with `supported`, its agent and a `reason` (`no_local_agent`, `planned_phase_5`). `config [-Agent] [-Model|-Profile]` prints, for each file in `.ai\agents\`, the record of `Resolve-HarnessExecution` (profile, model, `modelSource`, `parametersFrom`, `contextWindow`, `timeoutSec`, `reservedOutputTokens`, `think`, warnings) and the registry warnings; it sends no request. `doctor` runs `Get-HarnessRegistry`, then `Test-OllamaModel` per distinct model (one `/api/tags` call), with no `-TelemetryRoot`, never calls `/api/generate`, and reports each finding with a category: exit 0 all well, 1 a configured model is not installed, 2 invalid registry or Ollama unreachable. `list [-Last N]` shows runs newest first with the derived status. `status -RunId` prints `runId`, `workflow`, `recordedStatus`, `status`, `exitCode`, each stage's `id` and `status`, `warnings`, `error` and the manifest path. The derived status equals the recorded one, except that a recorded `running` is `abandoned` when the `pid` does not exist or its start time differs from `processStartUtc` by more than 2 s. `status` and `list` never write.
+Exit codes: 0 success; 1 workflow failure; 2 execution error; 3 `needs_human_input`; 4 unsupported stage. `manifest.exitCode` equals the process exit code. `error.category` is one of `invalid_arguments`, `registry_invalid`, `agent_not_found` (checked before the first stage), `ollama_unreachable`, `model_not_installed`, `model_load_failed`, `context_budget_exceeded`, `context_invalid`, `timeout`, `http_error`, `empty_output`, `invalid_output_format`, `validation_failed`, `review_failed`, `max_revisions_reached`, `needs_human_input`, `unsupported_stage`, `artifact_exists`, `artifact_in_use`, `stage_failed`, `internal_error`; `cancelled` and `abandoned` are reserved.
 
-### FR-310 — Execution model: no job daemon (XR-06, O-07, O-11)
+**Outcome table** ("record" is the stage's telemetry record, FR-307):
 
-**Source:** ASSUMPTION
+| Situation | Legacy | CLI | CLI category |
+|---|---|---|---|
+| review exit 0 | 0 | 0 | none |
+| runner or reviser throws, or exits other than 0 or `$null` | 2 | 2 | from the record, else `stage_failed` |
+| runner or reviser ends well, output file missing or empty | 2 | 2 | `stage_failed` |
+| first validation exit 3 | 3 | 3 | `needs_human_input` (run `needs_input`) |
+| first validation exit 1 | 2 | 1 | `validation_failed` |
+| first validation another code or a throw | 2 | 2 | `stage_failed` |
+| revised validation exit 1 or 3 | 2 | 1 | `validation_failed` |
+| revised validation another code or a throw | 2 | 2 | `stage_failed` |
+| review exit 2 | 2 | 2 | from the record, else `stage_failed` |
+| review exit outside 0, 1, 2, `$null`, or a throw | 2 | 2 | `stage_failed` |
+| review exit 0 or 1, review file missing or empty | 2 | 2 | `stage_failed` |
+| FAIL after revision 3 | 1 | 1 | `max_revisions_reached` |
+| `harness review`, verdict FAIL | n/a | 1 | `review_failed` |
 
-Phase 3 relies on Claude Code's own background execution (`run_in_background`) and builds no detached process, `-Background`, `cancel`, heartbeat or queue (OQ-302). The CLI is a short-lived foreground process built to be killed at any moment: the manifest is checkpointed at every stage event, `status` tells a live run from a dead one without its help, `-Resume` (FR-312) continues a dead run, and a caller passes `-RunId` to know the result path in advance. A run that starts while another recorded-`running` run with a live process has the same `harness.ollamaUrl` records the warning `concurrent_run_detected` (R-07); nothing is queued or refused for that.
+`stage_failed` has fixed wording naming the stage and code. The five unsupported commands exit 4 with one stage of kind `unsupported`, status `unsupported`, run `failed`, category `unsupported_stage` and the message "No local agent implements '<stage>'; perform it in Claude Code or manually." The harness never simulates a stage.
 
-### FR-311 — Safe concurrent runs (DF-202, I-6)
+**Protocol.** After argument validation and the claim, a workflow command prints `RUN_ID: <id>` and, as its last stdout line, `MANIFEST: <absolute path>`, on success and every later failure; before a nonzero exit it prints one `ERROR: <category>: <text>` line just before `MANIFEST:`. A failure before the claim prints only `ERROR:`, exits 2, writes no manifest. Failures keep partial artifacts and earlier stage records. The CLI never prompts or reads stdin. Legacy scripts keep their codes.
 
-**Source:** USER
-
-(a) Run ids and directories are unique (FR-304). (b) Manifest writes are atomic and readers retry (FR-305). (c) `Write-HarnessModelTelemetry` takes a named mutex around its whole file section (JSONL append, CSV header decision, CSV append): `Global\AiHarnessTelemetry-<first 16 hex of SHA-256 of the lower-cased full log directory path>`, with the `Local\` name as fallback when the `Global\` one is refused. It waits at most `-LockWaitMs` (new optional parameter, default 10000); `AbandonedMutexException` counts as acquired; the mutex is released in a `finally`; on a timeout it writes unlocked and prints a `Write-Warning`; it never fails the call. Records, columns, files and the CSV rule are unchanged. (d) A workflow command holds the mutex `Global\AiHarnessArtifact-<first 16 hex of the SHA-256 of the lower-cased target path, a vertical bar and the lower-cased name>` for the whole run, taken without waiting; if it is held, the command exits 2 with `artifact_in_use` before any stage, touching no artifact. The operating system releases it when the holder dies, so a killed run never blocks a new one (OQ-311). With (c), "exactly one record per call" (Phase 2 FR-216) holds under overlap.
-
-### FR-312 — Resume
-
-**Source:** ASSUMPTION
-
-`harness specify -Resume -RunId <id>` (also `review`, `revise`) continues a run that is derived `abandoned` or recorded `failed`. It exits 2 with `invalid_arguments`, running no stage and leaving the manifest untouched, for a run that is `succeeded`, `needs_input` or alive, for a missing manifest, and for a recomputed `taskSha256`, `name`, `mode`, target, overrides or `-Include` that differs from the manifest. The workflow is replayed: an agent stage that is `succeeded` in the old manifest and whose output file still has the recorded SHA-256 is not run again (`reused: true`, verdict taken from the manifest); every other stage, deterministic ones included, runs. `resumeCount` increases, earlier stage records are kept, id and directory stay, and the lock of FR-311(d) is taken again.
-
-### FR-313 — Repository context in every stage (XR-03 remainder, XR-04)
-
-**Source:** USER
-
-With `-Include`, `specify` first runs the stages `scan` (`scan-repository.ps1` on the target, to `inputs\scan.json`) and `context` (`build-context.ps1` with the includes, to `inputs\context.txt`, default limits 24000 and 20000), then passes the same file as `-ContextFile` to the spec agent, the reviewer and the reviser. `review-spec.ps1` and `revise-spec.ps1` gain an optional `-ContextFile`; their builders gain an optional `RepositoryContext` that adds one `data` part named `repository-context`, with the wording of `New-RunAgentPrompt`, after the task part. Without a context file every prompt is byte-identical to today's (Phase 2 goldens). The manifest records the context hash, each file's path, SHA-256 and size (computed by the CLI after `build-context.ps1` succeeded) and `contextSha256` on each stage that received it. The existing guards decide what is accepted (absolute or rooted paths, `..`, duplicates, files not in the scan, sensitive names, extensions, reparse points, NUL bytes, size limits); a rejection is `context_invalid` before any model call. New: `scan-repository.ps1` excludes `.ai-harness\`, so specs and reviews are never general context (XR-04). Not built: the derived budget `C - R - S - fixed size`, because the reviewer's fixed text already exceeds it under the shipped configuration (Phase 2 Context) and the ratio is uncalibrated until WP-2E; the engine's own check (`budget_exceeded` in `warn`, `context_budget_exceeded` in `enforce`) covers the prompt with context and reaches the manifest (OQ-312). The shared sensitive-pattern policy is not built (OQ-313).
-
-### FR-314 — Delete the deprecated wrappers (DF-203)
+### FR-309 - Read-only commands and derived status
 
 **Source:** USER
 
-`Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` are removed from `lib\agent-exec.ps1`, with the 8 `AC-216` cases that exercise them, the `Write-Host` exemption and the two pinned-list entries in `test-agent-prompts.ps1` (the NFR-203 scan then forbids `Write-Host` in the whole library), and the scan in `test-engine-callsites.ps1` that no script names them (replaced by AC-322). This supersedes Phase 2 FR-202, AC-216 and AC-218 for these two functions only; the Phase 2 spec gets a one-line note. The authorized edits of existing assertions are exactly these.
+`-Json` makes a read-only command print exactly one JSON line on success; any failure prints exactly one `ERROR: <token>: <text>` line (never JSON) and exits 2, tokens `invalid_arguments`, `manifest_invalid`, `registry_invalid`, `ollama_unreachable`. `stages` lists each command and stage with `supported`, its agent and a `reason` (`no_local_agent`, `planned_phase_5`). `config [-Agent] [-Model|-Profile]` prints per file of `.ai\agents\` the record of `Resolve-HarnessExecution` (profile, model, `modelSource`, `parametersFrom`, `contextWindow`, `timeoutSec`, `reservedOutputTokens`, `think`, warnings) plus the registry warnings; it sends no request. `list [-Last N]` shows runs newest first with the derived status; an unreadable or schema-invalid manifest is `unreadable`. `status -RunId` prints `runId`, `workflow`, `recordedStatus`, `status`, `exitCode`, each stage's `id` and `status`, `warnings`, `error` and the manifest path; an unknown run is `invalid_arguments`, an unreadable manifest `manifest_invalid`. The derived status equals the recorded one, except that a recorded `running` is `abandoned` when the `pid` does not exist or its start time differs from `processStartUtc` by more than 2 s. Neither command writes; readers use the FR-305 retries.
 
-### FR-315 — Split `test-engine-callsites.ps1` by script
+### FR-310 - Execution model: no job daemon (D-302)
 
 **Source:** USER
 
-The suite becomes `test-engine-callsites-run-agent.ps1`, `-review-spec.ps1` and `-revise-spec.ps1` over one helper, `tests\lib\engine-fake-host.ps1` (fake host, `New-TempHarness`, `Invoke-Case`, the four guards, assertion helpers; not named `test-*`, so `test-all.ps1` never runs it). Only the file and order of cases change; no case body, assertion or expected value is edited. FR-314 is done first, as its own commit. Each suite follows the `test-all.ps1` contract and runs the four guards.
+The CLI is a short-lived foreground process built to be killed at any moment: the manifest is checkpointed at every stage event, `status` tells a live run from a dead one, a caller passes `-RunId` to know the result path, a killed run is started again (D-301). There is no `-Background`, `cancel`, heartbeat or queue. A run that starts while a recorded-`running` run with a live process has the same `harness.ollamaUrl` (the 50 newest run folders are checked) records the warning `concurrent_run_detected` (R-07); nothing is queued or refused.
+
+### FR-311 - Safe concurrent runs (DF-202, D-308, D-309)
+
+**Source:** USER
+
+(a) Run ids are claimed atomically (FR-304). (b) Manifest writes are atomic, both sides retry (FR-305). (c) `Write-HarnessModelTelemetry` takes the named mutex `Global\AiHarnessTelemetry-<first 16 hex of SHA-256 of the lower-cased resolved log directory path>` around its whole file section (JSONL append, CSV header decision, CSV append) and appends **each file through one `FileStream`** (`Append`, `Write`, `FileShare.ReadWrite`) with a bounded retry on `IOException` until `-LockWaitMs` (new optional parameter, default 10000) is spent, instead of `Add-Content`; the bytes equal what `Add-Content -Encoding UTF8` wrote (BOM only when the file is created, CRLF). `AbandonedMutexException` counts as acquired; the mutex is released in a `finally`; if the `Global\` name is refused or the wait runs out it prints a `Write-Warning`, writes anyway relying on the retry, and never fails the call. No `Local\` fallback; records, columns and the CSV rule are unchanged. (d) `specify`, `review` and `revise` (not `scan` and `context`, which write only under `runs\<id>\`) hold `Global\AiHarnessArtifact-<first 16 hex of SHA-256 of the lower-cased resolved target path, `|`, the lower-cased name>` for the whole run, taken without waiting before any artifact is looked at (names never alias, FR-319, so the name is the family). Held or refused: exit 2 `artifact_in_use`, no artifact touched. The OS releases it when the holder dies (`AbandonedMutexException` counts as acquired). A mutex is recursive within a thread: one run per process.
+
+### FR-313 - Repository context in every stage (XR-03 rest, XR-04)
+
+**Source:** USER
+
+`-Include` is ONE string of relative paths separated by commas (a path with a comma, or an empty entry, is `context_invalid`). With it `specify` first runs `scan` (`scan-repository.ps1` on the target, to `inputs\scan.json`) and `context` (`build-context.ps1`, to `inputs\context.txt`, default limits 24000 and 20000), then passes that file as `-ContextFile` to the spec agent, reviewer and reviser. `review-spec.ps1` and `revise-spec.ps1` gain an optional `-ContextFile`; their builders gain an optional `RepositoryContext` that adds one `data` part `repository-context` after the task part (wording of `New-RunAgentPrompt`) only when bound, so without it every prompt equals the Phase 2 goldens byte for byte. The manifest records the context hash, each file's path, SHA-256 and size (computed by the CLI) and `contextSha256` on each stage that got it. The existing guards decide acceptance (absolute or rooted paths, `..`, duplicates, files not in the scan, sensitive names, extensions, reparse points, NUL bytes, size limits); a rejection is `context_invalid` before any model call. New: `scan-repository.ps1` excludes a top-level `.ai-harness\`; a target that equals or contains the harness root is refused, so `runs\` is never scanned. Not built (D-302): the derived budget and the shared sensitive-pattern policy.
+
+### FR-314 - Delete the deprecated wrappers (DF-203)
+
+**Source:** USER
+
+`Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` are removed from `lib\agent-exec.ps1`, with **all nine** `AC-216` cases of Context, the wrapper driver, the `Write-Host` exemption and the two pinned-list entries in `test-agent-prompts.ps1` (its NFR-203 scan then forbids `Write-Host` in the whole library), and the scan that no script names them (replaced by AC-322). This supersedes Phase 2 FR-202, AC-216 and AC-218 for these two functions only; the Phase 2 spec gets a one-line note and DF-202, DF-203 closed. These are the only authorized edits of existing assertions.
+
+### FR-315 - Split `test-engine-callsites.ps1` by script
+
+**Source:** USER
+
+It becomes `test-engine-callsites-run-agent.ps1`, `-review-spec.ps1` and `-revise-spec.ps1` over one helper `tests\lib\engine-fake-host.ps1` (fake host, `New-TempHarness`, `Invoke-Case`, the four guards, assertion helpers; not named `test-*`). No case body, assertion or expected value is edited; only file and order change, and a loop that builds cases for several scripts may have its script list cut to one (the case at line 2013, which tests two scripts, goes with its first). Case names are built at run time (85 `Test-Case` sites), so the reference is the name list printed by a run of the old suite. FR-314 comes first, as its own commit. Each suite follows the `test-all.ps1` contract and runs the four guards.
+
+### FR-316 - A prompt-truncation signal that works, and is printed (WP-2E s5, s13.5)
+
+**Source:** FACT
+
+**Data.** At `num_ctx` 16,384 a 19,142-token prompt of 85,957 characters was cut by the server to 8,194 tokens with HTTP 200; `prompt_eval_count` was the **cut** count and the server's `truncated` flag stayed 0. Healthy prompts measured 3.93 to 5.43 characters per token (16 prompts); the cut one 85,957 / 8,194 = 10.49. The shipped rule also fired on healthy prompts of 8,573 and 9,237 tokens.
+
+**Rule.** After a successful response, with `promptChars` the engine's `prompt_chars` and `n` the response's `prompt_eval_count` when it is a real number above 0, the engine adds the warning `prompt_truncation_detected` when `promptChars > 7 * n` (integers). The constant 7 lies between the healthy maximum 5.43 and twice the healthy minimum 7.86 (a cut to half the window doubles the ratio); it lives in the engine, not the registry. A missing, zero, negative, non-numeric or string `n` adds nothing and never throws. `possible_prompt_truncation` keeps its rule and is documented as weak.
+
+**Loud.** `run-agent.ps1`, `review-spec.ps1` and `revise-spec.ps1` print, after the `budget_exceeded` line, one yellow `Warning: prompt_truncation_detected (...)` or `Warning: possible_prompt_truncation (...)` line per warning present (the second says it is weak). Telemetry records both; the manifest carries both in stage and run `warnings`; the CLI prints `WARNING: <code>: <stage id>` after a stage with `prompt_truncation_detected`. The stage outcome is unchanged (OQ-316). Not verified at other window sizes; a cut all-Catalan prompt (about 2.9 characters per token) stays under 7.
+
+### FR-317 - A model-load failure is its own category and is not retried (WP-2E s9, s13.1-13.2)
+
+**Source:** FACT
+
+In `Get-AgentErrorCategory` (Phase 2 FR-211), an HTTP status 500 to 599 whose Ollama JSON `error` string contains (ordinal, case-sensitive) `Load failed`, `CUDA error` or `llama-server process has terminated` is the category `model_load_failed`, `retryable` false: one attempt, no wait, no `OnRetry`. It is the one rule where the engine reads body text to pick a category (the server's text, not PowerShell's); 4xx, a non-JSON body and other 5xx are unchanged. The fixed English hint says: the model could not be loaded by the Ollama server; retrying at once does not help; restarting the Ollama server may clear it; if it comes back after days of uptime, rebooting the machine is the remedy that worked. Telemetry `error_category` is `model_load_failed`; the scripts print `Category:` and `Hint:` as for any failure; the manifest maps it to itself. The `http_5xx` and `transport_reset` hints are unchanged (OQ-318). Phase 2 NFR-202 gets a one-line note.
+
+### FR-318 - `doctor`: preflight, and an optional load check (WP-2E s13.3)
+
+**Source:** USER
+
+`doctor` is read-only and never prompts. It runs `Get-HarnessRegistry` (finding `registry_invalid`), reads the version with `GET /api/version` through `Invoke-OllamaHttp` (failure: the informational finding `ollama_version_unavailable`), checks with `Test-OllamaModel` (route `/api/tags`, no `-TelemetryRoot`) that every model of `Get-HarnessRegistryModels` is installed (`model_not_installed`; Ollama down is `ollama_unreachable`), and reports free VRAM in MiB only if `nvidia-smi` resolves with `Get-Command` and `--query-gpu=memory.free --format=csv,noheader,nounits` answers within 5 s without admin rights (first line as integer; else null, no finding). Exit 0 all well; 1 a model missing or failing the load check; 2 invalid registry or Ollama unreachable. `-Json` prints `{registry, ollama {url, reachable, version}, models[], vramFreeMiB, findings[], exitCode}`.
+
+**Load check, off by default.** `doctor -LoadCheck`, and `specify -LoadCheck` as its first stage `load-check`, send for each distinct (model, effective options) of the agents `spec`, `spec-reviewer`, `spec-reviser` one request through the new engine function `Test-OllamaModelLoad`: a body with only `model`, `options` (with `num_ctx`, so the model is not reloaded later) and `stream` false, no prompt (loads, generates nothing), the profile's `timeoutSec`, **one attempt**, no telemetry. It returns `{ loaded, category, hint, durationMs }`, classified like any call. A failed check ends `specify` before any artifact is written. It is the one exception to "doctor never generates".
+
+### FR-319 - Spec names, overwrite policy, path safety (D-305, D-307)
+
+**Source:** USER
+
+A `-Name` matches `\A[A-Za-z0-9][A-Za-z0-9._-]*\z` and is not: ending in `.review`, ending in `.revised-v<digits>`, containing `.revised-v<digits>.`, ending in a dot, or having a device name (FR-304) before its first dot; else `invalid_arguments`. Legacy `specify.ps1` keeps its rule. A name's family is `<Name>.md`, `<Name>.review.md`, `<Name>.revised-vN.md`, `<Name>.revised-vN.review.md` (exact, case-insensitive).
+
+`specify` refuses with `artifact_exists` (exit 2, after the artifact lock and before any stage; manifest written) when a family file exists in `<target>\.ai-harness\specs\`, unless `-Overwrite`, which first moves the whole family (copy then delete across volumes) to `runs\<id>\replaced\`, listed in `artifacts[]` with role `replaced`. `review -Revision N` reads `<Name>.md` (N = 0) or `<Name>.revised-vN.md` and writes its `.review.md`; `revise -Revision N` (N >= 1) reads revision N-1 and its `.review.md`, writes `<Name>.revised-vN.md`, then validates it. A missing input is `invalid_arguments` before any run exists; an existing output is `artifact_exists`, or with `-Overwrite` that file alone is moved. No free output path. `<target>`, `<target>\.ai-harness` and `<target>\.ai-harness\specs` must not be reparse points (`invalid_arguments`, no manifest); missing levels are created.
 
 ## Non-Functional Requirements
 
-### NFR-301 — Platform and unattended use
+### NFR-301 - Platform and unattended use
 
 **Source:** PROJECT
 
-Windows PowerShell 5.1; no module, package or executable is added. `harness.ps1` never prompts and never reads stdin, so it is safe inside Claude Code's `run_in_background`: no `Read-Host`, `$Host.UI.Prompt*`, `pause`, `Start-Process`, `Start-Job` or HTTP cmdlet in `harness.ps1`, `lib\workflow.ps1` and `lib\manifest.ps1` (the only HTTP route stays inside `Invoke-OllamaHttp`), JSON written with depth at least 10, no `ConvertFrom-Json -AsHashtable`.
+Windows PowerShell 5.1; nothing added. `harness.ps1` never prompts or reads stdin (safe in Claude Code's `run_in_background`): no `Read-Host`, `$Host.UI.Prompt*`, `pause`, `Start-Process`, `Start-Job` or HTTP cmdlet in `harness.ps1`, `lib\cli.ps1`, `lib\workflow.ps1`, `lib\manifest.ps1` (the one HTTP route stays inside `Invoke-OllamaHttp`), JSON depth at least 10, no `ConvertFrom-Json -AsHashtable`. Tests may use `Start-Process`.
 
-### NFR-302 — Write boundaries
-
-**Source:** USER
-
-During any command, the target tree outside `.ai-harness\` is byte-identical before and after (SHA-256 tripwire); the harness root changes only in `runs\<runId>\` and `logs\`; for the legacy `specify.ps1`, only `specs\` as today.
-
-### NFR-303 — Offline, side-effect-free tests
+### NFR-302 - Write boundaries
 
 **Source:** USER
 
-Every new or changed suite follows Phase 0 NFR-002 and NFR-006 and Phase 2's pattern: no Ollama or network, writes only under `TEMP`, tripwire clean, no mandatory parameters, explicit `exit`. A test that runs a script that could send a request uses the engine fake host and its four guards (the URL must be `http://127.0.0.1:9`; the fake exits 97 unless it is in effect; any other URI is refused and recorded; a static scan of the copied scripts). Assertions match only exit codes, manifest values, record fields, and harness wording (`invalid_arguments:`, `MANIFEST:`, category names); never text produced by PowerShell, .NET or Ollama, and no expected value is computed with the code under test (hashes come from `Get-FileHash`, golden tables are literal, baselines come from `phase2-done`).
+During any CLI command the target outside `.ai-harness\` is byte-identical (SHA-256 tripwire, `.git\index` included) and the harness root changes only in `runs\<id>\` and `logs\`. Legacy `specify.ps1` keeps its footprint: `<harness>\specs\` and, through its agent scripts, `<harness>\logs\`. Read-only commands (without `-LoadCheck`) and `validate` change no file.
 
-### NFR-304 — Backward compatibility and change footprint
-
-**Source:** USER
-
-XR-01 holds: the parameters, exit codes, console markers and output files of `run-agent.ps1`, `specify.ps1`, `review-spec.ps1`, `revise-spec.ps1`, `validate-spec.ps1`, `scan-repository.ps1`, `build-context.ps1` and `benchmark-models.ps1`; `AI_HARNESS_MODEL` and `AI_HARNESS_RUN_ID`; a v1 configuration; the 31-column telemetry; the `test-all.ps1` contract. Prompts, `.ai\agents\*`, `.ai\rules\*`, `.ai\config.json`, `AGENTS.md` and the Phase 2 goldens do not change. Only the files under "Affected Files" change.
-
-### NFR-305 — Privacy of task text
+### NFR-303 - Offline, side-effect-free tests
 
 **Source:** USER
 
-The task text appears only in `runs\<runId>\inputs\task.md` and in the files the scripts already write. The manifest holds `taskSha256`, and telemetry stays as Phase 2 defined it (O-14).
+New or changed suites follow Phase 0 NFR-002 and NFR-006 and Phase 2's pattern: no Ollama or network, writes only under `TEMP`, tripwire clean, no mandatory parameters, explicit `exit`; a test that could send a request uses the engine fake host and its four guards. Assertions match only exit codes, manifest values, record fields and harness wording (`ERROR: invalid_arguments:`, `MANIFEST:`, category names, fixed hints), never text produced by PowerShell, .NET or Ollama; no expected value is computed with the code under test (hashes from `Get-FileHash`, literal tables, baselines from `phase2-calibrated`).
+
+### NFR-304 - Backward compatibility and footprint
+
+**Source:** USER
+
+XR-01 holds: parameters, exit codes, console markers and output files of the eight legacy scripts (the lines of FR-316 and the category of FR-317 are the only added output); `AI_HARNESS_MODEL`, `AI_HARNESS_RUN_ID`; a v1 configuration; the 31-column telemetry; the `test-all.ps1` contract. Prompts, `.ai\*`, `AGENTS.md` and the Phase 2 goldens do not change. Only the files under "Affected Files" change.
+
+### NFR-305 - Privacy of task text
+
+**Source:** USER
+
+The task text appears only in `runs\<id>\inputs\task.md` and in files the scripts already write. The manifest holds `taskSha256`; telemetry is as Phase 2 defined it (O-14).
 
 ## Acceptance Criteria
 
-"Mock stage scripts" are passed through the four seams; they record their arguments under `TEMP`, may write telemetry with `Write-HarnessModelTelemetry` (inheriting `AI_HARNESS_RUN_ID`), and are steered by environment variables. "End-to-end" cases run the real scripts on the engine fake host.
+"Mock stages" are scripts passed to `Invoke-HarnessCli` (FR-302) or `Invoke-SpecifyWorkflow` (FR-303); they record their arguments under `TEMP`, may write telemetry, and are steered by environment variables. "Fake host" is the Phase 2 engine fake host with its four guards. Commands run as `powershell.exe -NoProfile -NonInteractive -File` unless "in process" is said.
 
-### AC-301 — Dispatch and argument validation
+### AC-301 - Dispatch and argument validation
 
 **Source:** USER
 
 Verifies: FR-301, FR-302.
 
-Each command of FR-301 reaches its handler. Exit 2 with a first error line starting `invalid_arguments:` (no manifest for an unknown command, a failed manifest otherwise) for: an unknown command; `-Model` with `-Profile`; `-Task` with `-TaskFile`, or neither; a stray positional argument; an option of another command; a bad `-Name`; a missing `-TargetPath` for `specify`, `review`, `revise`, `scan`, `context`; a `-TargetPath` that is no folder; `revise` without `-Revision`. A relative `-TargetPath` is stored in full in the manifest.
+Each FR-302 row (a literal copy is in the test) with its required options reaches its handler; the AST of `harness.ps1` has no `param` block, `[CmdletBinding()]`, `[Parameter()]` or validation attribute. Each of these exits 2, prints `ERROR: invalid_arguments:` as first stdout line and leaves `runs\` empty: no command; an unknown command or option; `-Targ`; an option of another command, without a value, or duplicated; a leftover positional (`-Include a.md b.md`); each missing required option; `-Model` with `-Profile`; both or neither of `-Task`/`-TaskFile`; `-Mode Requirements`; `-Revision abc`; `revise` without `-Revision` or with 0; `-Last 0`; a `-TargetPath` that is missing, a file, a junction, or equals or contains the harness root; a missing input spec for `review`. With `-Json`, the same line. In process, a relative `-TargetPath` resolves against the PowerShell location (set apart from the process directory) and `C:\x`, `C:\x\` give one path.
 
-### AC-302 — The legacy interfaces are unchanged
+### AC-302 - The legacy interfaces are unchanged
 
 **Source:** USER
 
 Verifies: FR-303, NFR-304.
 
-The parameter names of `run-agent.ps1`, `specify.ps1`, `review-spec.ps1`, `revise-spec.ps1`, `validate-spec.ps1`, `scan-repository.ps1`, `build-context.ps1` and `benchmark-models.ps1`, read with the PowerShell parser, equal `tests\fixtures\legacy-parameters.json`, captured at `phase2-done` before any change, plus exactly `Profile` on `specify.ps1` and `ContextFile` on the reviewer and reviser. `test-mode-propagation.ps1`, `test-spec.ps1` and the engine call-site suites pass, and `git diff phase2-done` shows no changed line in the first two and no changed assertion in the third beyond FR-314 and FR-315.
+Parameter names, types and mandatory flags of the eight legacy scripts, read with the parser, equal `tests\fixtures\legacy-parameters.json` (captured at `phase2-calibrated` before any change) plus exactly `Profile` on `specify.ps1` and `ContextFile` on the reviewer and reviser. `test-mode-propagation.ps1`, `test-spec.ps1` and the engine call-site suites pass; `git diff phase2-calibrated` shows no changed line in the first two and no changed assertion in the third beyond FR-314, FR-315 and the fake `prompt_eval_count` values FR-316 may force (listed in the package report; no expected value changes).
 
-### AC-303 — One workflow for both front ends
+### AC-303 - One workflow for both front ends
 
 **Source:** USER
 
 Verifies: FR-303, FR-308.
 
-For the scenarios PASS at the first review, PASS after one revision, FAIL after 3 revisions, validator exit 3, validator exit 1 on the first spec, runner exit 2, reviewer exit 2, reviser exit 2, the recorded stage calls of `specify.ps1` and of `harness.ps1 specify` (order and arguments, the output directory replaced by a placeholder) each equal a frozen file `tests\fixtures\specify-calls-<scenario>.txt`, recorded by running the unmodified `specify.ps1` of `phase2-done` with the same mocks (so the oracle is not the new code). Exit codes in that order: legacy 0, 0, 1, 3, 2, 2, 2, 2; CLI 0, 0, 1, 3, 1, 2, 2, 2.
+For 13 scenarios with mock stages (PASS first review; PASS after one revision; FAIL after 3 revisions; first validation exit 3; first validation exit 1; runner exit 2; reviewer exit 2; reviser exit 2; revised validation exit 1; reviewer exit 5; runner exit 0 with no output file; reviewer throws; first validation exit 2) the recorded stage calls (order and arguments, output directory replaced by a placeholder) of `specify.ps1` and of the CLI each equal `tests\fixtures\specify-calls-<scenario>.txt`, recorded by the unmodified `specify.ps1` of `phase2-calibrated` with the same mocks (the oracle is not the new code); `specify.ps1`'s stdout (harness path replaced) equals `specify-output-<scenario>.txt` frozen the same way. Exit codes in that order: legacy 0, 0, 1, 3, 2, 2, 2, 2, 2, 2, 2, 2, 2; CLI 0, 0, 1, 3, 1, 2, 2, 2, 1, 2, 2, 2, 2.
 
-### AC-304 — `-Profile` on `specify.ps1`
+### AC-304 - `-Profile` on `specify.ps1`
 
 **Source:** USER
 
 Verifies: FR-303.
 
-With `-Profile P` bound, the three agent mocks receive `-Profile P` and no `-Model`; unbound, none receives `-Profile`; `-Model` with `-Profile` exits 2 with `invalid_arguments:` before any stage call.
+With `-Profile P` bound the three agent mocks get `-Profile P` and no `-Model`; unbound, none gets `-Profile`; `-Model` with `-Profile` exits 2 before any stage call.
 
-### AC-305 — Run id, layout and artifact locations
+### AC-305 - Run id, layout and artifact locations
 
 **Source:** USER
 
 Verifies: FR-304.
 
-A generated id matches `^\d{8}T\d{6}Z-[0-9a-f]{8}$`; a valid `-RunId` or `AI_HARNESS_RUN_ID` is used; an invalid environment value is ignored with `invalid_run_id_env` in the warnings; an invalid or existing `-RunId` exits 2 with `invalid_arguments:`. A mock `specify` with one revision against a temporary target leaves exactly `.ai-harness\specs\<Name>.md`, `.review.md`, `.revised-v1.md`, `.revised-v1.review.md` and, under `runs\<id>\`, `manifest.json` and `inputs\task.md` (bytes equal to the task). The mocks saw `AI_HARNESS_RUN_ID` equal to the id; the variable is restored afterwards. `.gitignore` has the line `runs/`.
+A generated id matches `^\d{8}T\d{6}Z-[0-9a-f]{8}$`; a valid `-RunId` is used. A mock `specify` with one revision on a temporary target leaves exactly `.ai-harness\specs\<Name>.md`, `.review.md`, `.revised-v1.md`, `.revised-v1.review.md` and, under `runs\<id>\`, `.claim`, `manifest.json`, `inputs\task.md` (bytes equal to the task). The mocks saw `AI_HARNESS_RUN_ID` equal to the id; afterwards it is restored. `.gitignore` has the line `runs/`.
 
-### AC-306 — The target is not touched outside `.ai-harness\`
+### AC-306 - Write boundaries
 
 **Source:** USER
 
 Verifies: FR-304, NFR-302.
 
-Around each of `specify` (success and failure), `review`, `revise`, `scan`, `context`, `architecture` and every read-only command, the SHA-256 listing of the target outside `.ai-harness\` is identical and the harness root differs only by new files in `runs\<id>\` and `logs\`. `status`, `list`, `stages`, `config`, `doctor` and `validate` change no file anywhere.
+Around `specify` (success and failure), `review`, `revise`, `scan`, `context`, `architecture` and every read-only command, the SHA-256 listing of the target outside `.ai-harness\` (and `.git\index` of a temporary git repository target) is identical and the harness root differs only by new files in `runs\<id>\` and `logs\`. Legacy `specify.ps1` changes only `specs\` and `logs\`. Read-only commands and `validate` change no file.
 
-### AC-307 — Manifest of a successful run
+### AC-307 - Manifest of a successful run
 
 **Source:** USER
 
 Verifies: FR-304, FR-305.
 
-The manifest of the one-revision mock `specify` passes `Test-HarnessManifest`: `status` `succeeded`, `exitCode` 0, stage ids `spec-generate`, `spec-validate`, `spec-review` (attempt 1, FAIL), `spec-revise`, `revised-validate`, `spec-review` (attempt 2, PASS), all `succeeded`; every `output.sha256` and artifact `sha256` equals `Get-FileHash`; model outputs are `untrusted-draft`; `verification` is empty; `process.pid` equals the id of the child process the test started and `processStartUtc` is within 2 s of its start; `taskSha256` and `registrySha256` equal the hashes of the task and config bytes.
+The one-revision mock `specify` manifest passes `Test-HarnessManifest`: `succeeded`, `exitCode` 0, stages `spec-generate`, `spec-validate`, `spec-review` (attempt 1, FAIL), `spec-revise`, `revised-validate`, `spec-review` (attempt 2, PASS), all `succeeded`; every `output.sha256` and artifact `sha256` equals `Get-FileHash`; model outputs are `untrusted-draft`; `verification` is empty; `process.pid` equals the pid of the child the test started and `processStartUtc` is within 2 s of its start; `taskSha256` and `registrySha256` equal the hashes of the task and config bytes. Every run, stage and `trust` value in any manifest of the suites is in the set the CLI writes.
 
-### AC-308 — Checkpoints and atomic writes
+### AC-308 - Checkpoints, atomic writes, string sources
 
 **Source:** USER
 
 Verifies: FR-305.
 
-A mock stage that reads `manifest.json` while it runs sees `running`, `exitCode` null, itself `running` and the earlier stages finished. A writer process rewrites a manifest 200 times while a reader process reads it in a loop: every read parses and validates (retries allowed, at most 5 per read), none returns partial JSON, and no temp file remains.
+A mock stage reading `manifest.json` while it runs sees `running`, `exitCode` null, itself `running` and earlier stages finished. A writer process rewrites a manifest 200 times while a reader process reads it in a loop with the FR-305 rules: every read parses and validates, none is partial, no reader runs out of retries, the writer never fails, no temp file remains. A manifest built from a 200 KB task file is written in under 5 s (a builder that puts a `Get-Content` string in the object fails).
 
-### AC-309 — Schema and validator
+### AC-309 - Schema and validator
 
 **Source:** USER
 
 Verifies: FR-306.
 
-A valid fixture passes. Fixtures with a missing required key (top level, stage, artifact), a wrong type, run status `unknown`, stage status `paused`, a bad `sha256`, `schemaVersion` 2, a terminal run with null `exitCode`, a `succeeded` run with a failed stage, a failed run with no `error`, a duplicate (`id`, `attempt`) and an absolute artifact path each fail with the expected code at the expected JSON path. The accepted run status, stage status and `trust` values equal the literal lists of roadmap XR-08 written in the test. Changing one enum value in a temporary copy of the schema changes the verdict for the same manifest.
+A valid fixture passes. Fixtures with a missing required key (top level, stage, artifact), a wrong type, `null` in a nullable field (valid) and in another (invalid), run status `unknown`, stage status `paused`, `Failed` (case), a bad `sha256`, `schemaVersion` 2, a terminal run with null `exitCode`, a `succeeded` run with a failed stage, a failed run with no `error`, a duplicate (`id`, `attempt`) and an absolute artifact path each fail with the expected code at the expected literal path. The accepted run statuses (7), stage statuses (7) and `trust` values (3) equal the literal XR-08 lists in the test; changing one enum value in a temporary schema copy changes the verdict for the same manifest.
 
-### AC-310 — Telemetry correlation
+### AC-310 - Telemetry correlation
 
 **Source:** ASSUMPTION
 
 Verifies: FR-307, NFR-304.
 
-Mock stages each write one record with set values (call id, 2 attempts, `budget_exceeded`, a category, a duration). The stage carries the same `callId`, `engineAttempts` 2, `warnings`, `callDurationMs`, `resolution`, `withinBudget` false and, on failure, `error.engineCategory` and `error.httpStatus`. `error.category` for each of the 11 engine categories equals the literal table of FR-307 in the test. A stage with no record has `callId` null and `telemetry_record_missing` in the stage and the run; with two records the last is used and `telemetry_multiple_records` is added; a record of another `run_id` written during the stage is ignored; run `warnings` has no duplicates. The first line of `model-calls.csv` still equals the 31-column header frozen from `phase2-done`.
+Mock stages each write one record with set values (call id, 2 attempts, `budget_exceeded`, a category, a duration); the stage carries the same `callId`, `engineAttempts` 2, `warnings`, `callDurationMs`, `resolution`, `withinBudget` false and, on failure, `error.engineCategory` and `error.httpStatus`. `error.category` for each of the 12 engine categories (Phase 2's 11 and `model_load_failed`) equals the literal table of FR-307. No record: `callId` null and `telemetry_record_missing` in stage and run; two records: the last wins plus `telemetry_multiple_records`; a record of another `run_id` is ignored; run `warnings` has no duplicates; a JSONL with a leading BOM is read. The first line of `model-calls.csv` equals the 31-column header frozen from `phase2-calibrated`.
 
-### AC-311 — Failure matrix
+### AC-311 - Failure matrix of `specify`
 
 **Source:** USER
 
 Verifies: FR-305, FR-308.
 
-Each injected failure gives the exit code and `error.category` below, a valid manifest, earlier stages and artifacts kept, the failing stage `failed` and every planned later stage `skipped` with `dependency failed: <id>` (for `max_revisions_reached` and `review_failed` the last review is `succeeded` with verdict `FAIL`). Runner exit 2 with a record of `http_5xx`: 2, `http_error`; `timeout`: 2, `timeout`; `empty_response`: 2, `empty_output`; reviewer `format_invalid`: 2, `invalid_output_format`; `transport_unreachable`: 2, `ollama_unreachable`; `model_not_installed`: 2, same; `context_budget_exceeded`: 2, same; a stage exit 2 with no record: 2, `stage_failed`; validator exit 1 on the first spec: 1, `validation_failed`; validator exit 3: 3, `needs_human_input`, run `needs_input`; FAIL four times: 1, `max_revisions_reached`; missing `.ai\agents\spec.md`: 2, `agent_not_found`; invalid registry: 2, `registry_invalid` (for these two no stage ran and every planned stage is `skipped`). `harness review`: FAIL gives 1, `review_failed`; PASS gives 0.
+Each injected failure gives the exit code and category below, a valid manifest, earlier stages and artifacts kept, the failing stage `failed` and each planned later stage `skipped` with `dependency failed: <id>`. Runner exit 2 with a record of `http_5xx`: 2 `http_error`; `timeout`: `timeout`; `empty_response`: `empty_output`; `model_load_failed`: `model_load_failed` with `retryable` false and `error.hint` containing "Restarting the Ollama server" and "rebooting the machine"; reviewer `format_invalid`: `invalid_output_format`; `transport_unreachable`: `ollama_unreachable`; `model_not_installed` and `context_budget_exceeded`: same name; a stage exit 2 with no record: `stage_failed`; a reviser that throws: the record's category, else `stage_failed`; every other row of the FR-308 table with its CLI exit and category. Missing `.ai\agents\spec.md` and an invalid registry: 2 `agent_not_found` and `registry_invalid`, no stage ran, planned stages `skipped` with `not reached: <category>`. `specify -LoadCheck` with a mock load check failing as `model_load_failed`: 2, no artifact written, later stages skipped.
 
-### AC-312 — Unsupported stages
+### AC-312 - Unsupported stages
 
 **Source:** USER
 
 Verifies: FR-308, FR-309.
 
-`architecture`, `plan`, `qa`, `code-review` and `develop` each exit 4 with one stage `unsupported`, run status `failed`, `unsupported_stage` and the FR-308 message with the stage name; no stage script is called and the fake host records no request. `stages -Json` lists those five with `supported` false and `specify`, `review`, `revise`, `scan`, `context`, `validate` with true.
+The five unsupported commands each exit 4 with one stage `unsupported`, run `failed`, `unsupported_stage` and the FR-308 message with the stage name; no stage script is called and the fake host records no request. `stages -Json` lists them with `supported` false and `specify`, `review`, `revise`, `scan`, `context`, `validate` with true.
 
-### AC-313 — Output protocol
+### AC-313 - Output protocol
 
 **Source:** USER
 
 Verifies: FR-308.
 
-For success and for each of exit 1, 2, 3 and 4, the first line after validation is `RUN_ID: <id>`, the last stdout line is `MANIFEST: <absolute path>`, the file exists, validates and holds that exit code. A bad `-RunId` prints one `ERROR: invalid_arguments:` line, exits 2 and creates nothing under `runs\`.
+For success and each of exit 1, 2, 3, 4 the first line after validation is `RUN_ID: <id>`, the last stdout line is `MANIFEST: <absolute path>`, a nonzero exit prints one `ERROR: <category>:` line just before it, and the manifest exists, validates and holds that exit code. A bad `-RunId` prints one `ERROR: invalid_arguments:` line, exits 2 and creates nothing under `runs\`.
 
-### AC-314 — `config`, `doctor`, `stages`, `-Json`
-
-**Source:** USER
-
-Verifies: FR-309.
-
-`config -Json` on `config-v2-current.json` gives, per agent, the profile, model, `modelSource`, `timeoutSec` and `contextWindow` of a literal table, also with `-Profile`, `-Model` and `AI_HARNESS_MODEL`; the fake host records no request. `doctor` on the fake host: all models listed gives 0; one missing gives 1 with `model_not_installed`; connection refused gives 2; an invalid registry gives 2; always at most one `/api/tags` route, no `/api/generate`, no telemetry record. Every `-Json` output is one parsable line and nothing else.
-
-### AC-315 — `status`, `list` and derived status
+### AC-314 - `config`, `stages` and `-Json`
 
 **Source:** USER
 
 Verifies: FR-309.
 
-A run whose mock stage sleeps is `running` while its process lives; after the test kills it, `status` shows `abandoned` with `recordedStatus` `running`. A manifest edited to the test's own live pid with another `processStartUtc` (over 2 s) shows `abandoned`. A finished run shows its recorded status. `list -Last 2` returns the two newest runs in order. The run directory has the same SHA-256 listing before and after `status` and `list`.
+`config -Json` on `config-v2-current.json` gives per agent the profile, model, `modelSource`, `timeoutSec` and `contextWindow` of a literal table, also with `-Profile`, `-Model` and `AI_HARNESS_MODEL`; the fake host records no request. Every `-Json` output is one parsable line; a failing read-only command under `-Json` prints one `ERROR:` line.
 
-### AC-316 — Concurrent runs
+### AC-315 - `status`, `list` and derived status
+
+**Source:** USER
+
+Verifies: FR-309.
+
+A run whose mock stage sleeps (handshake by an event file) is `running` while its process lives; after the test kills it `status` shows `abandoned` with `recordedStatus` `running`. A manifest edited to the test's own live pid with a `processStartUtc` over 2 s off, or to a pid that does not exist, shows `abandoned`. A finished run shows its recorded status. `list -Last 2` returns the two newest in order; a corrupt manifest is listed `unreadable` and `status` on it exits 2 `manifest_invalid`. The run directory has the same SHA-256 listing before and after both commands.
+
+### AC-316 - Concurrent runs
 
 **Source:** USER
 
 Verifies: FR-310, FR-311.
 
-Two `specify` runs with different names on one target, started together, both exit 0 with valid manifests and different ids; the telemetry file holds exactly the expected records, each with the right `run_id`. Two runs with the same target and name started together: one exits 0, the other 2 with `artifact_in_use` and changes nothing under `.ai-harness\`; after the holder is killed a third succeeds. A run started while another live run with the same `harness.ollamaUrl` is recorded `running` has `concurrent_run_detected` and still succeeds.
+Two `specify` runs with different names on one target, each mock waiting for the other's start event file, both exit 0 with valid manifests and different ids; the telemetry file holds exactly the expected records with the right `run_id`. Two runs with the same target and name, the first held at an event file: the second exits 2 `artifact_in_use` and changes nothing under `.ai-harness\`; after the holder is killed a third succeeds. A relative and an absolute spelling, a trailing backslash and (where 8.3 names exist) a short-name alias of one target give the same lock. A live run with the same `harness.ollamaUrl` recorded `running` gives the later run `concurrent_run_detected`, and it succeeds. A `Global\` name the process may not open gives `artifact_in_use`. The test proves exclusion only for the overlap it builds.
 
-### AC-317 — Telemetry writer under overlap
+### AC-317 - Telemetry writer under overlap
 
 **Source:** USER
 
 Verifies: FR-311.
 
-Four child processes each write 40 records (5 ms pause) to one temporary root: the JSONL has exactly 160 parsable lines with 160 distinct `call_id`; the CSV has 160 rows and one header. A second writer with `-LockWaitMs` 300 against a child holding the mutex writes its record after the wait, prints a warning and exits 0. A holder killed while holding the mutex does not block the next writer. The work package report records that the same stress with the lock disabled (temporary edit, hash-checked revert) loses records.
+Four child processes each write 40 records (5 ms pause) to one temporary root: the JSONL has exactly 160 parsable lines with 160 distinct `call_id`; the CSV has 160 rows and one header. Two writers (40 each) that read the JSONL with the FR-307 rules after every write, plus a third process reading in a loop, lose no record (80). A new JSONL starts with a BOM and later appends add none, as `Add-Content -Encoding UTF8` did at `phase2-calibrated`. A writer with `-LockWaitMs` 300 against a child holding the mutex writes after the wait, prints a warning and exits 0. A holder killed while holding it does not block the next writer. The package report records that the same stress with the lock disabled (temporary edit, hash-checked revert) loses records.
 
-### AC-318 — Resume
-
-**Source:** ASSUMPTION
-
-Verifies: FR-312.
-
-A run killed during `spec-review` (derived `abandoned`) is resumed with `-Resume -RunId`: exit 0; the runner mock ran once in total; `resumeCount` 1; `spec-generate` has `reused` true and the old `callId`; id and directory are unchanged. A changed task, name, mode, include list or model override, a `succeeded` run, a live run and an unknown id exit 2 with `invalid_arguments:` and run no stage. If the `spec-generate` output was edited, the stage runs again with `reused` false. A second resume while the first runs is refused with `artifact_in_use`.
-
-### AC-319 — Context in every stage
+### AC-319 - Context in every stage
 
 **Source:** USER
 
 Verifies: FR-313.
 
-With `-Include` of two files, `scan` and `context` precede `spec-generate`; the runner, reviewer and reviser mocks all receive `-ContextFile` with `runs\<id>\inputs\context.txt`; `context.sha256` and each `files[].sha256` equal `Get-FileHash`; every agent stage has that `contextSha256`; without `-Include` no context stage runs and no `-ContextFile` is passed. End-to-end, each script's request prompt contains the file text. Without a context file the request bodies equal the Phase 2 goldens byte for byte (AC-201 cases unchanged); with one, the parts list equals the no-context list plus one `data` part `repository-context` after the task part, whose text equals what `New-RunAgentPrompt` builds for the same string.
+With `-Include "a.md,b.md"`, `scan` and `context` precede `spec-generate`; the runner, reviewer and reviser mocks all get `-ContextFile` with `runs\<id>\inputs\context.txt`; `context.sha256` and each `files[].sha256` equal `Get-FileHash`; every agent stage has that `contextSha256`; without `-Include` no context stage runs and no `-ContextFile` is passed. On the fake host with the real scripts each request prompt contains the file text; without a context file the request bodies equal the Phase 2 goldens byte for byte; with one, the parts list is the no-context list plus one `data` part `repository-context` after the task part, whose text equals what `New-RunAgentPrompt` builds for the same string. `scan` and `context` alone leave `scan.json` (and `context.txt`) in the run directory and exit 0.
 
-### AC-320 — Include rejections and the `.ai-harness\` exclusion
+### AC-320 - Include rejections and the `.ai-harness\` exclusion
 
 **Source:** USER
 
 Verifies: FR-313, NFR-304.
 
-Each of these `-Include` values exits 2 with `context_invalid` before any model call, stage `context` failed and later stages skipped: an absolute path, a rooted path, `..`, a duplicate, a file not in the scan, `.env`, a `.pem` file, an unsupported extension, a file over 20000 bytes, a set over 24000 characters, a junction (if it can be created; else reported skipped), a file below `.ai-harness\`. `scan-repository.ps1` leaves `.ai-harness\` out of its manifest, and for a tree without it the output is byte-identical to the frozen output at `phase2-done`.
+Each of these `-Include` values exits 2 `context_invalid` before any model call, stage `context` failed, later stages skipped: an absolute path, a rooted path, `..`, a duplicate, a file not in the scan, `.env`, a `.pem` file, an unsupported extension, a file over 20000 bytes, a set over 24000 characters, a junction (if it can be created), a file below `.ai-harness\`, an empty entry, a path with a comma. `scan-repository.ps1` leaves `.ai-harness\` out; for a tree without it the output equals the frozen output of `phase2-calibrated` after `scannedAtUtc` and `rootPath` are replaced by a placeholder, byte for byte.
 
-### AC-321 — Real scripts end to end
+### AC-321 - Real scripts end to end
 
 **Source:** USER
 
-Verifies: FR-303, FR-307.
+Verifies: FR-303, FR-307, FR-316, FR-317.
 
-On the engine fake host with the real scripts: one `harness specify` run (spec, validation, one FAIL review, one revision, PASS) has stage `callId`, `resolution` and `engineAttempts` equal to the run's telemetry records (one per agent stage); a run with a 500 on the reviewer exits 2 with `http_error` and `error.engineCategory` `http_5xx`; the fake recorded only `http://127.0.0.1:9/` routes.
+On the fake host with the real scripts: one `harness specify` run (spec, validation, one FAIL review, one revision, PASS) has stage `callId`, `resolution` and `engineAttempts` equal to its telemetry records (one per agent stage); `specify.ps1` in process with output captured prints the same lines as at `phase2-calibrated`; a 500 on the reviewer exits 2 `http_error` with `engineCategory` `http_5xx`; a 500 on the **reviser** (which throws) exits 2 `http_error`, stage `spec-revise` failed, not `internal_error`; a 500 with a `CUDA error` body exits 2 `model_load_failed` after one attempt; a reviewer answer with `prompt_eval_count` 1 gives stage warnings with `prompt_truncation_detected`, the printed `WARNING: prompt_truncation_detected:` line and an unchanged outcome; a real `scan` is a succeeded stage and a real `build-context` rejecting an include a failed one. The fake recorded only `http://127.0.0.1:9/` routes.
 
-### AC-322 — The wrappers are gone
+### AC-322 - The wrappers are gone
 
 **Source:** USER
 
 Verifies: FR-314.
 
-The syntax tree of `lib\agent-exec.ps1` defines neither wrapper; after dot-sourcing the three libraries `Get-Command` finds neither; no file under `scripts\` or `tests\` contains either name (the test builds the names from fragments); the 8 AC-216 wrapper cases are gone; the NFR-203 scan of `test-agent-prompts.ps1` has no function exemption and finds no `Write-Host` in the library; the pinned list equals the Phase 2 list minus the two names; the other AC-216 criteria still pass.
+The syntax tree of `lib\agent-exec.ps1` defines neither wrapper; after dot-sourcing the three libraries `Get-Command` finds neither; no file under `scripts\` or `tests\` contains either name (built from fragments in the test); the nine wrapper cases and the driver are gone; the NFR-203 scan of `test-agent-prompts.ps1` has no function exemption and finds no `Write-Host` in the library; the pinned list equals Phase 2's minus the two names; the other AC-216 criteria pass.
 
-### AC-323 — The suite split
+### AC-323 - The suite split
 
 **Source:** USER
 
 Verifies: FR-315.
 
-`test-engine-callsites.ps1` is gone; the three suites and the helper exist; `test-all.ps1` discovers the three and not the helper; each parses, has no mandatory parameter, ends with `exit`, passes with the four guards and runs under 300 s. The union of their case names equals `tests\fixtures\engine-callsites-cases.txt` (the old file's case names at the commit before the split, written by the work package from the old file) and the counts add up to its line count; the report repeats the comparison against `git show` of the old file.
+`test-engine-callsites.ps1` is gone; the three suites and the helper exist; `test-all.ps1` discovers the three and not the helper; each parses, has no mandatory parameter, ends with `exit`, passes with the four guards and runs under 300 s. The union of their case names equals `tests\fixtures\engine-callsites-cases.txt`, the names printed by a run of the old suite at the commit before the split (minus the nine wrapper cases when FR-314 is done first), and the counts add up.
 
-### AC-324 — Full offline regression and determinism
+### AC-324 - Full offline regression and determinism
 
 **Source:** PROJECT
 
 Verifies: NFR-301, NFR-303.
 
-`scripts\test-all.ps1` offline, run twice: every suite PASS except the live one (SKIPPED), tripwire clean everywhere, no FAIL, and the two logs equal once times are removed. `test-syntax.ps1` parses every new file. A static scan finds none of the commands forbidden by NFR-301 in the three files named there, and no `.Exception.Message` in an assertion of a new suite.
+`scripts\test-all.ps1` offline, run twice: every suite PASS except the live one (SKIPPED), tripwire clean, no FAIL, the two logs equal once times are removed. `test-syntax.ps1` parses every new file. A static scan finds none of the NFR-301 commands in `harness.ps1`, `lib\cli.ps1`, `lib\workflow.ps1`, `lib\manifest.ps1`, and no `.Exception.Message` in an assertion of a new suite.
 
-### AC-325 — Footprint
+### AC-325 - Footprint
 
 **Source:** USER
 
 Verifies: NFR-304.
 
-`git diff --name-status phase2-done` of the final tree lists only the files of "Affected Files"; none of `.ai\`, `AGENTS.md`, `tests\golden\` or a Phase 0 to 2 fixture is in it; the case counts of the unchanged suites equal their Phase 2 counts (listed in the final QA).
+`git diff --name-status phase2-calibrated` of the final tree lists only the files of "Affected Files" and `docs/audits/*phase3*`; none of `.ai\`, `AGENTS.md`, `tests\golden\` or a Phase 0 to 2 fixture; the case counts of the unchanged suites equal their Phase 2 counts.
 
-### AC-326 — Unattended behavior
+### AC-326 - Unattended behavior
 
 **Source:** PROJECT
 
 Verifies: NFR-301.
 
-Every command runs as `powershell.exe -NoProfile -NonInteractive` with stdin from an empty stream and ends within its test limit with the exit codes above. The static scan of AC-324 covers `harness.ps1`, `lib\workflow.ps1` and `lib\manifest.ps1`.
+Every command runs as `powershell.exe -NoProfile -NonInteractive` with stdin from an empty stream and ends within its test limit with the exit codes above.
 
-### AC-327 — Task text stays out of the manifest and telemetry
+### AC-327 - Task text stays out of the manifest and telemetry
 
 **Source:** USER
 
@@ -405,16 +472,72 @@ Verifies: NFR-305.
 
 A task with a unique marker leaves the marker in `inputs\task.md` and in no other file under `runs\<id>\` nor any line of `logs\model-calls.jsonl` and `.csv` the run wrote.
 
+### AC-328 - Names, overwrite, path safety
+
+**Source:** USER
+
+Verifies: FR-319.
+
+`-Name` values `a.review`, `a.revised-v1`, `a.revised-v12.x`, `a.`, `CON`, `nul.txt`, `.a`, `a b` and `a` plus a newline exit 2 `invalid_arguments:` before any run; `a.revised-vx`, `a.b-c_d`, `review` are accepted. With each of `<Name>.md`, `.review.md`, `.revised-v1.md`, `.revised-v2.review.md` present, `specify` exits 2 `artifact_exists`, no stage runs, the files keep their SHA-256, the manifest is valid; another name's files do not count. With `-Overwrite` the family moves to `runs\<id>\replaced\` with the same bytes, `artifacts[]` lists it with role `replaced`, and the run writes the four files. A junction as `.ai-harness` or `specs` exits 2 `invalid_arguments:`, nothing written through it.
+
+### AC-329 - Run id grammar and claim
+
+**Source:** USER
+
+Verifies: FR-304.
+
+`-RunId` values `abc` plus a newline, `CON`, `con.x`, `abc.`, `-a`, `a/b`, `..`, a 65-character id and an existing id exit 2 `invalid_arguments:` and add nothing under `runs\`; a 64-character id, `a.b` and `A_b-1` are accepted. Four processes claiming the same 200 ids give exactly 200 winners. An invalid `AI_HARNESS_RUN_ID` is ignored with `invalid_run_id_env`; one whose directory exists gives `<env>-<4 hex>` with `run_id_env_reused`, exit 0, and telemetry `run_id` equal to the manifest `runId`.
+
+### AC-330 - The stage contract
+
+**Source:** USER
+
+Verifies: FR-303.
+
+In process, through the library entry point with mock stages: a stage that writes its answer to the success stream and exits 0 leaves that text, and nothing else, in the captured output, and `-Result.outcome` is `passed`; with `$global:LASTEXITCODE` preset to 7 a mock validator that sets no code succeeds, and each stage has one `stage_end`; a stage that throws gives one `stage_end` (status `failed`, exit code null) and, through `specify.ps1`, exit 2 with the same two failure lines as at `phase2-calibrated`, through the CLI exit 2 `stage_failed`; real `scan-repository.ps1` and `build-context.ps1` succeed with no exit code and a stale `$LASTEXITCODE`, and fail when they throw or the output file is missing; a throwing hook gives `internal_error` and a finalized manifest.
+
+### AC-331 - Prompt-truncation signal
+
+**Source:** FACT
+
+Verifies: FR-316.
+
+Through `Invoke-AgentModel` on the fake host with C 16,384, R 8,192, a system plus prompt of exactly `promptChars` characters and a response with `prompt_eval_count` `n`, the warnings are (literal; `old` = `possible_prompt_truncation`, `new` = `prompt_truncation_detected`): 85,957 / 8,194: old and new (the live truncation); 41,770 / 8,573 and 44,784 / 9,237: old only (the live false positives); 26,431 / 4,986, 29,247 / 5,384, 14,776 / 3,116 and 22,123 / 5,627 (Catalan): none; 7,000 / 1,000: none; 7,001 / 1,000: new; `n` absent, 0, -1, `"8194"` or NaN: no new warning, no throw. The telemetry `warnings` column holds the same codes. On the fake host `run-agent.ps1`, `review-spec.ps1` and `revise-spec.ps1` each print a line starting `Warning: prompt_truncation_detected` when answered with `n` 1, and none when answered with `n` = `prompt_chars` / 5 (integer division, `prompt_chars` read from the telemetry record of the first call).
+
+### AC-332 - Model-load failure
+
+**Source:** FACT
+
+Verifies: FR-317.
+
+On the fake host, one attempt and no sleep for: 500 `{"error":"llama-server process has terminated: exit status 0xc0000409"}`; 500 `{"error":"... Load failed ..."}`; 503 `{"error":"CUDA error: out of memory"}`; each gives `model_load_failed`, `retryable` false, `attempts` 1, telemetry `error_category` `model_load_failed`, the FR-317 hint (asserted by "Restarting the Ollama server" and "rebooting the machine"), and script exit 2 with `Category:` and `Hint:` lines. 500 `{"error":"internal server error"}` is `http_5xx` with `maxAttempts` attempts and one wait; 400 `{"error":"Load failed"}` is `http_4xx`; 500 `{"error":"load failed"}` and 500 with the plain body `Load failed` are `http_5xx`. The same rule holds for a warm-up request.
+
+### AC-333 - `doctor` and the load check
+
+**Source:** USER
+
+Verifies: FR-318.
+
+`doctor` on the fake host: all models listed and a version answered gives 0 and the version; one missing gives 1 `model_not_installed`; connection refused gives 2 `ollama_unreachable`; an invalid registry gives 2 `registry_invalid`; no `/api/version` gives 0 and `ollama_version_unavailable`; only the routes `/api/tags` and `/api/version` are seen; no telemetry record, no file written. The `nvidia-smi` parser gives 11924 for `11924` and null for `N/A`, empty and `11924 MiB`; `vramFreeMiB` is null when the executable is absent. `doctor -LoadCheck` and `Test-OllamaModelLoad` send one request per distinct (model, options) pair of the three agents, whose decoded body has only `model`, `options` (`num_ctx` = the profile's `contextWindow`) and `stream`; success gives `loaded` true; a 500 `CUDA error` body gives exit 1, `model_load_failed` and one attempt; without `-LoadCheck` no `/api/generate` is sent.
+
+### AC-334 - `review` and `revise`
+
+**Source:** USER
+
+Verifies: FR-301, FR-319.
+
+On the fake host with the real scripts: `harness review -Name n -Revision 0` on an existing `n.md` writes `n.review.md` and exits 0 for PASS, 1 `review_failed` for FAIL; `revise -Revision 1` reads `n.md` and `n.review.md`, writes `n.revised-v1.md`, validates it (1 `validation_failed` when it fails) and exits 0; `review -Revision 1` and `revise -Revision 2` read and write only the files of FR-319, refuse an existing output with `artifact_exists` and move it with `-Overwrite`; each manifest has one stage of the matching id (`revise` also `revised-validate`) with the attempt of FR-305, and `request.revision` equals the option.
+
 ## Traceability Matrix
 
-This table is the inverse of the `Verifies:` lines above. The two must stay identical (the final QA re-derives it).
+Inverse of the `Verifies:` lines above; the two must stay identical (the final QA re-derives it).
 
 | Requirement | Acceptance criteria |
 |---|---|
-| FR-301 | AC-301 |
+| FR-301 | AC-301, AC-334 |
 | FR-302 | AC-301 |
-| FR-303 | AC-302, AC-303, AC-304, AC-321 |
-| FR-304 | AC-305, AC-306, AC-307 |
+| FR-303 | AC-302, AC-303, AC-304, AC-321, AC-330 |
+| FR-304 | AC-305, AC-306, AC-307, AC-329 |
 | FR-305 | AC-307, AC-308, AC-311 |
 | FR-306 | AC-309 |
 | FR-307 | AC-310, AC-321 |
@@ -422,10 +545,13 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 | FR-309 | AC-312, AC-314, AC-315 |
 | FR-310 | AC-316 |
 | FR-311 | AC-316, AC-317 |
-| FR-312 | AC-318 |
 | FR-313 | AC-319, AC-320 |
 | FR-314 | AC-322 |
 | FR-315 | AC-323 |
+| FR-316 | AC-321, AC-331 |
+| FR-317 | AC-321, AC-332 |
+| FR-318 | AC-333 |
+| FR-319 | AC-328, AC-334 |
 | NFR-301 | AC-324, AC-326 |
 | NFR-302 | AC-306 |
 | NFR-303 | AC-324 |
@@ -436,99 +562,87 @@ This table is the inverse of the `Verifies:` lines above. The two must stay iden
 
 | File | Change | Requirements |
 |---|---|---|
-| `scripts/harness.ps1`, `lib/workflow.ps1`, `lib/manifest.ps1`, `lib/run-manifest.schema.json` (new) | Entry point; `Invoke-SpecifyWorkflow`; run ids, directory, atomic write and read, checkpoints, correlation, derived status, `Test-HarnessManifest`; the schema | FR-301 to FR-313 |
-| `scripts/specify.ps1` (modified) | Thin wrapper of the workflow; `-Profile` | FR-303 |
-| `scripts/review-spec.ps1`, `revise-spec.ps1`, `lib/agent-exec.ps1` (modified) | Optional `-ContextFile` and builder part; the two wrappers removed | FR-313, FR-314 |
-| `scripts/lib/telemetry.ps1` (modified) | Mutex, `-LockWaitMs` | FR-311 |
-| `scripts/scan-repository.ps1` (modified) | Exclude `.ai-harness\` | FR-313 |
-| `scripts/test-agent-prompts.ps1`, `test-agent-telemetry-v2.ps1`, `test-scan-repository.ps1` (modified) | FR-314 edits only; writer lock cases; the exclusion case | FR-311, FR-313, FR-314 |
-| `scripts/test-engine-callsites.ps1` (deleted); `-run-agent`, `-review-spec`, `-revise-spec` suites, `tests/lib/engine-fake-host.ps1` (new) | The split | FR-315 |
-| `scripts/test-harness-{cli,workflow,manifest,concurrency,context,e2e}.ps1` (new); `test-all.ps1` (only if sandbox entries are needed) | Phase 3 suites | AC-301 to AC-321, AC-326, AC-327 |
-| `tests/fixtures/`, `tests/mocks/` (new files) | `legacy-parameters.json`, `specify-calls-*.txt`, `engine-callsites-cases.txt`, manifest fixtures, header and scan baselines; recording mock stage scripts | AC-302 to AC-323 |
-| `.gitignore`, `README.md` (modified) | `runs/`; commands, exit codes, `MANIFEST:` | FR-304, FR-308 |
-| `specs/harness-phase-2-shared-engine.md` (modified) | One-line note on FR-314; DF-202, DF-203 closed | FR-314 |
-| this spec, `docs/audits/2026-11-25-phase3-spec-notes.md`, one report per work package (new) | Traceability | none |
+| `scripts/harness.ps1`, `lib/cli.ps1`, `lib/workflow.ps1`, `lib/manifest.ps1`, `lib/run-manifest.schema.json` (new) | Parser; command handlers; workflow; ids, claim, manifest, status, validator; schema | FR-301 to FR-311, FR-313, FR-318, FR-319 |
+| `scripts/specify.ps1`, `review-spec.ps1`, `revise-spec.ps1`, `run-agent.ps1`, `scan-repository.ps1`, `lib/agent-exec.ps1`, `lib/telemetry.ps1` (modified) | Thin front end, `-Profile`, `-ContextFile`, warning lines, exclusion; wrappers removed, truncation warning, `model_load_failed`, `Test-OllamaModelLoad`, builder context part; mutex, `FileStream`, `-LockWaitMs`, locked read | FR-303, FR-307, FR-311, FR-313 to FR-318 |
+| `scripts/test-agent-prompts.ps1`, `test-agent-telemetry-v2.ps1`, `test-scan-repository.ps1` (modified); `test-engine-callsites.ps1` (deleted); three `test-engine-callsites-*` suites, `tests/lib/engine-fake-host.ps1`, `test-harness-{cli,workflow,manifest,concurrency,context,e2e}.ps1` (new); `test-all.ps1` (only if needed) | FR-314 edits; new cases; the split; Phase 3 suites | FR-311 to FR-319 |
+| `tests/fixtures/`, `tests/mocks/` (new files); `.gitignore`, `README.md`, `specs/harness-phase-2-shared-engine.md` (modified); this spec, its notes, one report per package | Frozen baselines and mock stages; `runs/`, commands, exit codes; Phase 2 notes (FR-314, FR-317, DF-202, DF-203); traceability | FR-304, FR-308, FR-314, FR-317 |
 
-**Not modified:** `run-agent.ps1`, `validate-spec.ps1`, `build-context.ps1`, `benchmark-models.ps1`, `.ai/*`, `AGENTS.md`, `tests/golden/*`, the Phase 0 to 2 fixtures and every other suite.
+Not modified: `validate-spec.ps1`, `build-context.ps1`, `benchmark-models.ps1`, `.ai/*`, `AGENTS.md`, `tests/golden/*`, Phase 0 to 2 fixtures, the roadmap (OQ-322), every other suite.
 
 ## Execution Order
 
-One work package per unattended session. After each: `scripts/test-all.ps1` offline twice with counts recorded, the mutation proofs its acceptance criteria name (temporary edit, hash-checked revert), a report `docs/audits/<date>-phase3-<wp>.md`, then **stop for review and human approval**. Local model output is never verification; nothing is pushed. "Opus review" marks packages whose risk is behavioral or concurrent; the rest suit a Sonnet review.
+One work package per unattended session. After each: `scripts/test-all.ps1` offline twice with counts, the mutation proofs its criteria name (temporary edit, hash-checked revert), a report `docs/audits/<date>-phase3-<wp>.md`, then **stop for review and approval**. Nothing is pushed; local model output is never verification. Each exit check names only criteria that can pass at that step. S = Sonnet, O = Opus (implement / review).
 
-| Step | Work package | Depends on | Implement / review | Exit check |
+| Step | Package | Needs | S/O | Exit check |
 |---|---|---|---|---|
-| 0 | Baseline: offline `test-all` at `phase2-done`; freeze `legacy-parameters.json`, `specify-calls-*.txt` (unmodified `specify.ps1` with the AC-303 mocks), the telemetry header and the scan output; owner decides OQ-301 to OQ-313 | Spec approved | owner | recorded |
-| 1 | **WP-3A Telemetry lock** (FR-311c), writer cases, child-process stress, mutation proof | 0 | Sonnet / **Opus** (mutex semantics) | AC-317 |
-| 2 | **WP-3B Cleanup**: FR-314 (one commit), then FR-315 (one commit, move only, a script compares case names) | 0 | Sonnet / Sonnet | AC-322, AC-323 |
-| 3 | **WP-3C Manifest library**: ids, run directory, atomic write and read, derived status, schema, validator, fixtures, `.gitignore`; no workflow script changes | 0 | Sonnet / **Opus** (schema, invariants) | AC-308, AC-309 |
-| 4 | **WP-3D Workflow extraction**: `workflow.ps1`, `specify.ps1` as a wrapper, `-Profile` | 2 | Sonnet / **Opus** (behavior preserved) | AC-302, AC-304 |
-| 5 | **WP-3E CLI skeleton and read-only commands**, unsupported stages, exit codes, `-Json` | 3 | Sonnet / Sonnet | AC-301, AC-312, AC-314, AC-315, AC-326 |
-| 6 | **WP-3F Workflow commands**: target layout, checkpoints, correlation, failure matrix, artifact lock, `concurrent_run_detected`, README | 1, 3, 4, 5 | Sonnet / **Opus** (core of the phase) | AC-303 to AC-307, AC-310 to AC-313, AC-316, AC-321, AC-327 |
-| 7 | **WP-3G Context in every stage**: reviewer and reviser `-ContextFile`, builders, `scan` and `context`, `.ai-harness\` exclusion, include rejections | 2, 6 | Sonnet / **Opus** (prompts, goldens) | AC-319, AC-320 |
-| 8 | **WP-3H Resume** (FR-312); can be cut with no effect on the rest | 6 | Sonnet / Sonnet | AC-318 |
-| 9 | Final QA by an independent session, human approval, tag `phase3-done` | 1 to 8 | **Opus** | AC-301 to AC-327 |
+| 0 | Baseline at `phase2-calibrated`: offline `test-all`; freeze `legacy-parameters.json`, `specify-calls-*`, `specify-output-*`, the telemetry header, the scan output, the old case-name list; owner decides the Open Questions | spec approved | owner | recorded |
+| 1 | **A1** Telemetry mutex, `FileStream` append, locked reader | 0 | S / O | AC-317 |
+| 2 | **A2** Wrapper deletion: 9 cases, driver, exemption, list (one commit) | 0 | S / S | AC-322 |
+| 3 | **A3** Suite split, move only, a script compares case names | 2 | S / S | AC-323 |
+| 4 | **A4** FR-316, FR-317, `Test-OllamaModelLoad`, warning lines | 3 | S / O | AC-331, AC-332, library half of AC-333 |
+| gate | **Gate 3A**: offline `test-all` twice, report, owner approval, tag `phase3a-done`; the spec may be revised before 3B | 1 to 4 | owner | AC-324 as far as it applies |
+| 5 | **B1** Manifest library: ids, claim, atomic write and read, derived status, schema, validator, `.gitignore` | gate | S / O | AC-309, AC-329, writer-reader half of AC-308 |
+| 6 | **B2** Workflow extraction, `-Profile`, stage contract | gate | O / O | AC-304, AC-330, AC-302 without the two `ContextFile` additions |
+| 7 | **B3** Parser, `stages`, `config`, `doctor`, `validate`, unsupported stages | 5 | S / S | AC-301, AC-312, AC-314, AC-333 |
+| 8 | **B4** `specify`: layout, manifest, checkpoints, correlation, names, overwrite, protocol | 5, 6, 7 | O / O | AC-303, AC-305, AC-307, AC-308 (checkpoints), AC-310, AC-311, AC-313, AC-321, AC-327, AC-328 |
+| 9 | **B5** `review`, `revise`, live `status` and `list` | 8 | S / O | AC-334, AC-315 |
+| 10 | **B6** Artifact lock, concurrent runs | 8 | O / O | AC-316 |
+| 11 | **B7** `-ContextFile` and builders of reviewer and reviser | 8 | S / O | builder part of AC-319, AC-302 complete |
+| 12 | **B8** `scan`, `context`, `-Include`, exclusion | 11 | S / O | AC-319, AC-320 |
+| 13 | **B9** Every command unattended, footprint, README, regression | 1 to 12 | S / S | AC-306, AC-324, AC-325, AC-326 |
+| 14 | Final QA by an independent session; approval; tag `phase3-done` | all | O | AC-301 to AC-334 |
 
-**The live validation WP-2E is a separate activity, run by the owner when Ollama is available (Phase 2 Execution Order, step 8). No package above depends on it, and no criterion of this phase needs a live model.** What waits for it is only recorded here: `charsPerToken` calibration, `budgetMode` and context windows (so the derived context budget, OQ-312), real durations and retries, `possible_prompt_truncation` against a real server, and `abandoned` detection during a real long call. Its benchmark precondition (DF-201) is unchanged.
+WP-2E is done (Phase 2 rev 3.5); no criterion needs a live model.
 
 ## Edge Cases
 
-- **Start time unreadable** (another user's process): `status` shows `abandoned` only when the pid does not exist; otherwise `running` with `liveness_unverified` in its output (not in the manifest). A reused pid is caught by the start-time comparison.
-- **Same name, different targets:** the artifact lock includes the target path, so they never block each other. **`-TargetPath` equal to the harness root:** allowed; artifacts go to `<harness>\.ai-harness\specs\`, never to `<harness>\specs\`.
-- **No telemetry file at `stage_begin`:** the offset is 0. **A stage killed after writing its output and before the checkpoint:** `-Resume` runs it again.
-- **Line endings:** hashes are over bytes; `inputs\task.md` is the task as UTF-8 without BOM.
-- **A throwing stage hook:** `internal_error`, the run stops and the manifest is still finalized.
+- **Start time unreadable** (another user's process): `status` shows `abandoned` only when the pid does not exist, else `running` with `liveness_unverified` in its output.
+- **Same name, different targets** never block each other (the lock includes the target). **A stage killed after writing its output and before the checkpoint:** the run is `abandoned`; start it again (`-Overwrite` if its family exists; after a failure that follows `-Overwrite` the old family stays in `replaced\`).
+- **No telemetry file at `stage_begin`:** offset 0. **Telemetry lock refused or timed out:** warning and an unlocked write; a record may be lost (AC-317 proves only the locked case).
 
 ## Dependencies
 
-- Phase 2 complete (tag `phase2-done`). Phase 4 and Phase 5 depend on this phase; Phase 5 adds `develop`.
-- Runtime: Windows PowerShell 5.1; read-only `git` is optional. No Ollama, network or new tools for any acceptance criterion of this phase.
-- Test infrastructure: the `test-all.ps1` contract, sandbox and tripwire; the engine fake host and four guards (moved to `tests\lib\engine-fake-host.ps1` by FR-315).
+- Phase 2 complete and calibrated (tag `phase2-calibrated`); Phase 5 adds `develop`. Windows PowerShell 5.1; read-only `git` and `nvidia-smi` optional. No Ollama, network or new tool for any criterion.
+- The `test-all.ps1` contract, sandbox and tripwire; the engine fake host (moved by FR-315, with a `/api/version` route).
 
 ## Risks and Rollback
 
 | ID | Risk | Mitigation |
 |---|---|---|
-| RK-301 | The extraction changes `specify.ps1` behavior. | AC-302, AC-303 (same recorded calls, legacy suites unchanged); WP-3D has an Opus review. |
-| RK-302 | Byte-offset correlation misattributes or misses a record. | Filter by `run_id`; the lock keeps lines whole; a missing record is a warning, never a guess (AC-310). |
-| RK-303 | Mutex semantics (abandonment, `Global\` refused) are wrong. | AC-316, AC-317 with killed holders; Opus review of WP-3A. |
-| RK-304 | The schema interpreter drifts from the schema file. | One source: the validator reads the file (AC-309). |
-| RK-305 | A resume reuses a stale output. | Reuse only with an equal request and a matching SHA-256 (AC-318). |
-| RK-306 | The context part changes reviewer behavior. | It exists only with `-ContextFile`; the no-context path keeps the goldens (AC-319). |
+| RK-301 | The extraction changes `specify.ps1` behavior. | AC-303, AC-330; Opus on B2. |
+| RK-302 | Offset correlation misattributes or misses a record. | `run_id` filter, locked read, a warning (AC-310). |
+| RK-303 | Mutex semantics (abandonment, refused `Global\`) are wrong. | AC-316, AC-317 with killed holders; Opus on A1, B6. |
+| RK-304 | The context part changes reviewer behavior; the schema reader drifts. | Only with `-ContextFile` (AC-319); the validator reads the file (AC-309). |
+| RK-305 | The new engine rules break Phase 2 cases (a fake `prompt_eval_count` far below the prompt size); the constant 7 misfires on unusual text. | A4 lists every edited fake value, no expected value changes (AC-302); warning only (OQ-316, OQ-320). |
 
-**Rollback.** One or two commits per package; revert in reverse order. Legacy scripts and telemetry formats never change shape. WP-3B's commits are independent. `runs\` can be deleted at any time.
+**Rollback.** One or two commits per package, reverted in reverse order; legacy scripts and telemetry formats keep their shape; 3A is useful alone; `runs\` can be deleted at any time.
 
 ## Open Questions
 
-Each has a RECOMMENDATION; none is decided. Alternatives are in `docs/audits/2026-11-25-phase3-spec-notes.md`.
+Each has a RECOMMENDATION; none is decided. Revision 2 applies them so the spec is implementable; the owner may change any.
 
-- **OQ-301 (O-07):** is `-TargetPath` required? RECOMMENDATION: yes for every command that writes an artifact, no current-folder default.
-- **OQ-302 (O-11):** built-in `-Background` and `cancel`? RECOMMENDATION: no. Rely on Claude Code's background execution; the CLI is short-lived, checkpoints, reports `status` and can `-Resume`. Build a detached mode only if that proves insufficient (pid and start time are already recorded).
-- **OQ-303:** include `-Resume`? RECOMMENDATION: yes, as the last package (WP-3H); it can be cut alone.
-- **OQ-304:** telemetry columns (`workflow_id`, `stage`, `task_sha256`, `output_path`, `target_root`; Phase 2 OQ-205) and `budget.reservedOutputTokens`? RECOMMENDATION: add none; join by `run_id` and `call_id`. Another CSV header would force another file split and an engine change.
-- **OQ-305:** manifest category names. RECOMMENDATION: the roadmap names, mapped from the engine's (Phase 2 OQ-212), engine name kept in `error.engineCategory`.
-- **OQ-306:** `develop` now? RECOMMENDATION: exit 4 `planned_phase_5`; Phase 5 FR-503 defines it.
-- **OQ-307:** should legacy `specify.ps1` write a run directory and manifest? RECOMMENDATION: no (unchanged behavior); an opt-in switch later.
-- **OQ-308:** an unknown command. RECOMMENDATION: exit 2 `invalid_arguments`; exit 4 is for unsupported stages (O-18).
-- **OQ-309:** `console.log`, `prompts\`, `outputs\*.raw.md` (O-12). RECOMMENDATION: defer; they need a capture hook in the scripts or the engine.
-- **OQ-310:** exit code of a failed structural validation. RECOMMENDATION: CLI 1 (XR-10), legacy 2.
-- **OQ-311:** concurrency policy. RECOMMENDATION: same target and name is refused (`artifact_in_use`); a shared Ollama URL only warns (R-07); `Global\` mutexes with a `Local\` fallback.
-- **OQ-312:** derived context-file budget (XR-03). RECOMMENDATION: defer until after WP-2E; the engine's check already covers the prompt with context.
-- **OQ-313:** the shared sensitive-file policy (XR-04). RECOMMENDATION: defer; no Phase 3 criterion needs it, and merging two scripts' lists is outside the smallest change.
+- **OQ-301 (O-07):** is `-TargetPath` required? RECOMMENDATION: yes for commands that write artifacts, no default.
+- **OQ-305:** manifest category names. RECOMMENDATION: roadmap names mapped from the engine's, engine name in `error.engineCategory`, four added names (FR-308). **OQ-308:** unknown command is exit 2 `invalid_arguments` (4 is for unsupported stages, O-18). **OQ-310:** failed validation is CLI 1 (XR-10), legacy 2 (XR-01).
+- **OQ-314:** a target that CONTAINS the harness root. RECOMMENDATION: refuse it like the equal case, so `runs\` is never scanned. **OQ-315:** length limit for `-Name`. RECOMMENDATION: 64 characters (not yet in FR-319).
+- **OQ-316:** effect of `prompt_truncation_detected`. RECOMMENDATION: a loud warning now; after one more live observation fail a `review` stage that has it (a PASS from a cut prompt is untrustworthy). **OQ-320:** the constant 7. RECOMMENDATION: keep it in the engine, re-check at the next calibration.
+- **OQ-317:** model-switch policy. Live data (WP-2E s9, s13.4): 8 of 8 first loads succeeded with an explicit `ollama stop` and a 3 s wait between models, and 6 loads of the 35b with the 9b resident succeeded after the reboot; before it 11 of 18 such loads failed with a CUDA fault; the 35b runs at 58 % CPU / 42 % GPU, so the two models do not fit together. An explicit unload needs `keep_alive: 0`, which the Phase 2 request whitelist (FR-207) excludes: an engine change. RECOMMENDATION: not designed here; decide with more uptime data.- **OQ-318:** reword the `http_5xx` and `transport_reset` hints like the load-failure hint. RECOMMENDATION: yes, in a Phase 2 text edit (Phase 2 tests pin them).
+- **OQ-319:** retention of `runs\` (task texts, absolute paths; nothing deletes them). RECOMMENDATION: document in the README; pruning stays `[O]`.
+- **OQ-320:** the constant 7. RECOMMENDATION: keep it in the engine; re-check at the next calibration.
+- **OQ-321:** `-LoadCheck` default. RECOMMENDATION: off; revisit if the fault returns.
+- **OQ-322:** roadmap text for D-302 and D-303. RECOMMENDATION: the owner edits XR-06, XR-03, XR-04 and Phase 3 AC-302 in a separate commit.
 
 ## Assumptions
 
-- **A-301:** the manifest `schemaVersion` 1 is its own version, independent of the registry's.
-- **A-302:** stages of one run run one after another in one process, so a stage's records are the new lines with the run's `run_id`.
-- **A-303:** a process of the same user can be queried with `Get-Process` for its id and start time.
-- **A-304:** an ordinary user can create a `Global\` mutex in the same logon session; otherwise the `Local\` fallback applies.
-- **A-305:** Claude Code's `run_in_background` keeps the process attached and returns its stdout and exit code; a killed session is handled by `status` and `-Resume`.
-- **A-306:** `build-context.ps1` keeps its defaults (`MaxTotalChars` 24000, `MaxFileBytes` 20000).
+- **A-301:** manifest `schemaVersion` 1 is independent of the registry's version.
+- **A-302:** the stages of a run run one after another in one process, so a stage's records are the new lines with the run's `run_id`.
+- **A-303:** `Get-Process` gives the id and start time of a same-user process.
+- **A-304:** an ordinary user can create a `Global\` mutex in the same logon session; if not, FR-311 reports it (no fallback).
+- **A-305:** Claude Code's `run_in_background` keeps the process attached and returns stdout and the exit code.
+- **A-306:** `build-context.ps1` keeps its defaults (24000, 20000).
+- **A-307:** Ollama's request with a model and no prompt loads the model and generates nothing.
 
 ## Not Verified
 
-- Anything against a real Ollama: real durations, retries, `abandoned` detection during a real long call, real context sizes (WP-2E).
-- Behavior with a process or a mutex owned by another Windows user or session.
-- Antivirus or indexer interference with `File.Replace` on `manifest.json`.
-- `-Resume` after a power loss in the middle of a write (only a killed process is tested).
-- Windows PowerShell 5.1 builds and cultures other than the ones used in Phase 2.
-- That Claude Code's current background mechanism behaves as A-305 states; Phase 4 checks it (R-12).
+- Anything against a real Ollama: durations, `abandoned` in a real long call, the constant 7 at other windows, other load-fault texts.
+- A mutex or file owned by another Windows user or an elevated process; other cultures than es-ES; a slower disk; antivirus effects on `File.Replace`; the `File.Replace`, mutex and claim numbers are the review's experiments outside the repository; nothing here was implemented.
+- `Process.StartTime` precision against 2 s; Claude Code's background behavior (A-305); `nvidia-smi` output on other drivers.

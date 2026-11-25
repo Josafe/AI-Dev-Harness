@@ -626,6 +626,36 @@ try {
         Assert-Equal "csv physical lines" 4 @([System.IO.File]::ReadAllLines((Join-Path $caseRoot "logs\model-calls.csv"))).Count
     }
 
+    Test-Case "AC-204 (final QA N-10) a v2 CSV whose last row has no final newline: the new row starts on its own line (two rows read back, no joined cells), also after a lone CR" {
+        foreach ($ending in @(@{ Name = "no final newline"; Strip = 2; Add = @() }, @{ Name = "final LF only"; Strip = 2; Add = @(10) }, @{ Name = "final CR only"; Strip = 2; Add = @(13) })) {
+            $caseRoot = New-CaseRoot
+            Write-Record $caseRoot
+            $csv = Join-Path $caseRoot "logs\model-calls.csv"
+            $bytes = [System.IO.File]::ReadAllBytes($csv)
+            Assert-True "$($ending.Name): the created file ends with CR LF" ($bytes[$bytes.Length - 2] -eq 13 -and $bytes[$bytes.Length - 1] -eq 10)
+            $cut = New-Object 'System.Collections.Generic.List[byte]'
+            for ($index = 0; $index -lt $bytes.Length - $ending.Strip; $index++) { $cut.Add($bytes[$index]) }
+            foreach ($extra in $ending.Add) { $cut.Add([byte]$extra) }
+            [System.IO.File]::WriteAllBytes($csv, $cut.ToArray())
+
+            Write-Record $caseRoot -Status "error"
+            $rows = @(Import-Csv -LiteralPath $csv)
+            Assert-Equal "$($ending.Name): rows read back" 2 $rows.Count
+            Assert-Equal "$($ending.Name): row statuses" "success,error" (($rows | ForEach-Object { $_.status }) -join ",")
+            foreach ($row in $rows) { Assert-Equal "$($ending.Name): every row has 31 cells" 31 @($row.PSObject.Properties).Count }
+            Assert-Equal "$($ending.Name): physical lines" 3 @([System.IO.File]::ReadAllLines($csv) | Where-Object { $_ -ne "" }).Count
+            Assert-True "$($ending.Name): no v2 file" (-not (Test-Path -LiteralPath (Join-Path $caseRoot "logs\model-calls.v2.csv")))
+        }
+    }
+
+    Test-Case "AC-204 (final QA N-10) a file that already ends with a newline gets no blank line: three appended rows give exactly the header and three lines" {
+        $caseRoot = New-CaseRoot
+        foreach ($status in @("success", "error", "success")) { Write-Record $caseRoot -Status $status }
+        $lines = @([System.IO.File]::ReadAllLines((Join-Path $caseRoot "logs\model-calls.csv")))
+        Assert-Equal "physical lines" 4 $lines.Count
+        Assert-Equal "blank lines" 0 @($lines | Where-Object { $_ -eq "" }).Count
+    }
+
     Test-Case "AC-204 (e) a leading BOM on the header is ignored: with it and without it the v2 header is recognised, and a BOM plus legacy header is left alone" {
         # the file the writer creates on this host begins with a BOM (Set-Content -Encoding UTF8 on PowerShell 5.1)
         $caseRoot = New-CaseRoot

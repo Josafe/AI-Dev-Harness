@@ -172,6 +172,23 @@ function Write-HarnessModelTelemetry {
 
         if ($null -ne $target) {
             if (Test-Path -LiteralPath $target) {
+                # A file without a final newline (edited by hand, or cut by a crash) would
+                # have the new row joined to its last row (final QA N-10): the last byte
+                # is read and a line end is added when it is missing. A last byte of 0
+                # is a UTF-16 file, which is left as it is (as before).
+                $lastByte = -1
+                $tail = [System.IO.File]::Open($target, [System.IO.FileMode]::Open, [System.IO.FileAccess]::Read, [System.IO.FileShare]::ReadWrite)
+                try {
+                    if ($tail.Length -gt 0) {
+                        [void]$tail.Seek(-1, [System.IO.SeekOrigin]::End)
+                        $lastByte = $tail.ReadByte()
+                    }
+                }
+                finally { $tail.Dispose() }
+                if ($lastByte -gt 0 -and $lastByte -ne 10) {
+                    $lineEnd = if ($lastByte -eq 13) { "`n" } else { "`r`n" }
+                    [System.IO.File]::AppendAllText($target, $lineEnd, (New-Object System.Text.UTF8Encoding($false)))
+                }
                 $csvLines | Select-Object -Skip 1 |
                     Add-Content -LiteralPath $target -Encoding UTF8
             }

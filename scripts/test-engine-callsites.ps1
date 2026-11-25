@@ -1,7 +1,7 @@
 <#
 .SYNOPSIS
     Offline child-process suite for the engine call sites (Phase 2, WP-2D1:
-    run-agent.ps1 and the deprecated wrappers; WP-2D2: review-spec.ps1 and
+    run-agent.ps1; WP-2D2: review-spec.ps1 and
     revise-spec.ps1).
 
 .DESCRIPTION
@@ -11,8 +11,7 @@
     stops before any request in enforce mode and is sent with a warning in warn
     mode), AC-213 (child-process part: the default transport reaches the fake
     Invoke-RestMethod with the profile's timeoutSec and healthTimeoutSec) and
-    AC-216 (parameter block, exit codes, the wrappers Invoke-HarnessGenerate and
-    Test-HarnessModelAvailable). The same criteria are covered for review-spec.ps1
+    AC-216 (parameter block, exit codes) and AC-322 (the wrappers are gone). The same criteria are covered for review-spec.ps1
     and revise-spec.ps1 (WP-2D2), plus AC-214 (the telemetry record of the reviewer
     and the reviser) and the legacy failure-path wording of both scripts.
 
@@ -333,46 +332,6 @@ catch {
 exit $exitCode
 '@
     [System.IO.File]::WriteAllText($fakeHost, $fakeHostSource, $utf8NoBom)
-
-    # Driver of the wrapper cases: runs one deprecated wrapper inside the fake host
-    # and prints markers the suite can read.
-    $driverSource = @'
-param([string]$Case, [string]$Root)
-
-$ErrorActionPreference = "Stop"
-. (Join-Path $PSScriptRoot "lib\config.ps1")
-. (Join-Path $PSScriptRoot "lib\telemetry.ps1")
-. (Join-Path $PSScriptRoot "lib\agent-exec.ps1")
-
-$config = Get-HarnessConfig -ConfigPath (Join-Path $Root ".ai\config.json")
-
-switch ($Case) {
-    "generate" {
-        $text = Invoke-HarnessGenerate -Model "test-model-alpha" -System "AB" -Prompt "CDE" -Config $config
-        Write-Host "TEXT[$text]"
-    }
-    "generate-telemetry" {
-        $text = Invoke-HarnessGenerate -Model "test-model-alpha" -System "AB" -Prompt "CDE" -Config $config -TelemetryAgent "driver-agent" -TelemetryRoot $Root
-        Write-Host "TEXT[$text]"
-    }
-    "generate-throws" {
-        try {
-            $text = Invoke-HarnessGenerate -Model "test-model-alpha" -System "AB" -Prompt "CDE" -Config $config
-            Write-Host "NOTHROW[$text]"
-        }
-        catch {
-            Write-Host "THROW[$($_.Exception.Message)]"
-        }
-    }
-    "available" {
-        $problem = Test-HarnessModelAvailable -Model "test-model-alpha" -Config $config
-        Write-Host "PROBLEM[$problem]"
-        Write-Host "PROBLEM-COUNT[$(@($problem).Count)]"
-    }
-}
-exit 0
-'@
-    [System.IO.File]::WriteAllText((Join-Path $harnessRoot "scripts\wrapper-driver.ps1"), $driverSource, $utf8NoBom)
 }
 
 # Guard 4: no other HTTP route in the copied scripts, and Invoke-RestMethod is called
@@ -462,7 +421,6 @@ function Invoke-Case {
         $scriptArguments.OutputFile = $outputFile
     }
     foreach ($key in $Arguments.Keys) { $scriptArguments[$key] = $Arguments[$key] }
-    if ($Script -ceq "wrapper-driver.ps1") { $scriptArguments.Root = $harnessRoot }
 
     $scenario = [ordered]@{
         script           = (Join-Path $harnessRoot "scripts\$Script")
@@ -1185,101 +1143,6 @@ try {
         Assert-Equal "generate calls" 0 (@(Get-Route $run "generate").Count)
     }
 
-    # -----------------------------------------------------------------------
-    Write-Host ""
-    Write-Host "=== AC-216: the deprecated wrappers keep their names, parameters and behavior ===" -ForegroundColor Cyan
-
-    Test-Case "AC-216 Invoke-HarnessGenerate and Test-HarnessModelAvailable exist after dot-sourcing the three libraries with the baseline parameters" {
-        $problems = & {
-            . (Join-Path $scriptsDirectory "lib\config.ps1")
-            . (Join-Path $scriptsDirectory "lib\telemetry.ps1")
-            . (Join-Path $scriptsDirectory "lib\agent-exec.ps1")
-            $generate = Get-Command Invoke-HarnessGenerate -CommandType Function
-            $available = Get-Command Test-HarnessModelAvailable -CommandType Function
-            $found = @()
-            $found += "generate:" + ((@($generate.Parameters.Keys | Where-Object { @("Verbose", "Debug", "ErrorAction", "WarningAction", "InformationAction", "ErrorVariable", "WarningVariable", "InformationVariable", "OutVariable", "OutBuffer", "PipelineVariable") -notcontains $_ })) -join ",")
-            $found += "available:" + ((@($available.Parameters.Keys | Where-Object { @("Verbose", "Debug", "ErrorAction", "WarningAction", "InformationAction", "ErrorVariable", "WarningVariable", "InformationVariable", "OutVariable", "OutBuffer", "PipelineVariable") -notcontains $_ })) -join ",")
-            $mandatory = @($generate.Parameters.Values | Where-Object { $_.Attributes | Where-Object { $_ -is [System.Management.Automation.ParameterAttribute] -and $_.Mandatory } } | ForEach-Object { $_.Name } | Sort-Object)
-            $found += "generate-mandatory:" + ($mandatory -join ",")
-            $found
-        }
-        Assert-Equal "Invoke-HarnessGenerate parameters" "generate:Model,System,Prompt,Config,TelemetryAgent,TelemetryRoot,Execution" $problems[0]
-        Assert-Equal "Test-HarnessModelAvailable parameters" "available:Model,Config" $problems[1]
-        Assert-Equal "Invoke-HarnessGenerate mandatory" "generate-mandatory:Config,Model,Prompt,System" $problems[2]
-    }
-
-    Test-Case "AC-216 Invoke-HarnessGenerate returns the trimmed text with <think> blocks removed (no think member without -Execution)" {
-        $run = Invoke-Case -Name "w-generate" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "generate" } `
-            -GenerateSteps @((New-Step "ok" @{ response = "<think>x</think>  Wrapper answer.  "; doneReason = "stop" }))
-        Assert-Guards $run
-        Assert-Equal "exit code" 0 $run.ExitCode
-        Assert-ExactLine $run "TEXT[Wrapper answer.]"
-        $generation = @(Get-Generations $run)[0]
-        Assert-Equal "members" "model,options,prompt,stream,system" $generation.members
-        Assert-Equal "system" "AB" (ConvertFrom-Base64Utf8 $generation.systemB64)
-        Assert-Equal "prompt" "CDE" (ConvertFrom-Base64Utf8 $generation.promptB64)
-        Assert-Equal "timeout (the registry default, no -Execution)" 111 $generation.timeoutSec
-        Assert-Equal "telemetry lines (none without TelemetryAgent and TelemetryRoot)" 0 $run.Telemetry.Count
-    }
-
-    Test-Case "AC-216 Invoke-HarnessGenerate returns an empty string for an empty answer (the callers check it)" {
-        $run = Invoke-Case -Name "w-generate-empty" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "generate" } `
-            -GenerateSteps @((New-Step "ok" @{ response = "   "; doneReason = "stop" }))
-        Assert-Guards $run
-        Assert-Equal "exit code" 0 $run.ExitCode
-        Assert-ExactLine $run "TEXT[]"
-    }
-
-    Test-Case "AC-216 Invoke-HarnessGenerate throws a message starting with 'Ollama request failed:' when the request fails" {
-        $run = Invoke-Case -Name "w-generate-throws" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "generate-throws" } `
-            -GenerateSteps @((New-Step "http" @{ status = 400; body = '{"error":"wrapper failure"}' })) -TypedExceptions
-        Assert-Guards $run
-        Assert-Equal "exit code" 0 $run.ExitCode
-        $thrown = @($run.Lines | Where-Object { $_.StartsWith("THROW[Ollama request failed:", [System.StringComparison]::Ordinal) })
-        Assert-Equal "throw lines" 1 $thrown.Count
-        Assert-NoLine $run "NOTHROW"
-    }
-
-    Test-Case "AC-216 Invoke-HarnessGenerate with -TelemetryAgent and -TelemetryRoot writes exactly one record" {
-        $run = Invoke-Case -Name "w-generate-telemetry" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "generate-telemetry" } `
-            -GenerateSteps @((& $okReply "Wrapper answer."))
-        Assert-Guards $run
-        Assert-Equal "exit code" 0 $run.ExitCode
-        Assert-Equal "telemetry lines" 1 $run.Telemetry.Count
-        Assert-Equal "agent" "driver-agent" $run.Telemetry[0].agent
-        Assert-Equal "status" "success" $run.Telemetry[0].status
-        Assert-Equal "model" "test-model-alpha" $run.Telemetry[0].model
-    }
-
-    Test-Case "AC-216 Test-HarnessModelAvailable returns nothing and prints nothing when the model is installed (case-insensitive)" {
-        $run = Invoke-Case -Name "w-available" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "available" } `
-            -TagsSteps @((New-Step "ok" @{ models = @("TEST-MODEL-ALPHA") }))
-        Assert-Guards $run
-        Assert-Equal "exit code" 0 $run.ExitCode
-        Assert-ExactLine $run "PROBLEM[]"
-        Assert-ExactLine $run "PROBLEM-COUNT[0]"
-        Assert-NoLine $run "Model not found"
-        Assert-Equal "generate calls" 0 (@(Get-Route $run "generate").Count)
-        Assert-Equal "health timeout" 7 (@(Get-Route $run "tags")[0].timeoutSec)
-    }
-
-    Test-Case "AC-216 Test-HarnessModelAvailable prints the legacy lines and returns the legacy problem string when the model is missing" {
-        $run = Invoke-Case -Name "w-missing" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "available" } `
-            -TagsSteps @((New-Step "ok" @{ models = @("other-model-1") }))
-        Assert-Guards $run
-        Assert-ExactLine $run "Model not found: test-model-alpha"
-        Assert-ExactLine $run "Available models:"
-        Assert-ExactLine $run "  - other-model-1"
-        Assert-ExactLine $run "PROBLEM[The requested Ollama model is not installed. Try: ollama pull test-model-alpha]"
-    }
-
-    Test-Case "AC-216 Test-HarnessModelAvailable prints the legacy line and returns the legacy problem string when Ollama is unreachable" {
-        $run = Invoke-Case -Name "w-unreachable" -ConfigText (New-V2Config) -Script "wrapper-driver.ps1" -Arguments @{ Case = "available" } `
-            -TagsSteps @((New-Step "status" @{ webStatus = "ConnectFailure" })) -TypedExceptions
-        Assert-Guards $run
-        Assert-ExactLine $run "Ollama is not reachable at $fakeUrl. Make sure Ollama is running."
-        Assert-ExactLine $run "PROBLEM[Ollama is not reachable at $fakeUrl. Make sure Ollama is running.]"
-    }
     # =======================================================================
     # WP-2D2: review-spec.ps1 and revise-spec.ps1
     # =======================================================================
@@ -2041,22 +1904,34 @@ try {
         if (@($hook.Foreign).Count -gt 0) { throw "the hook reads variables that are not its parameter: $($hook.Foreign -join ', ')" }
     }
 
-    Test-Case "AC-216 after both scripts stopped calling them, the wrappers live in agent-exec.ps1 and no longer in config.ps1 (FR-201, FR-202)" {
-        foreach ($name in @("Invoke-HarnessGenerate", "Test-HarnessModelAvailable")) {
-            foreach ($library in @("config.ps1", "agent-exec.ps1")) {
-                $tokens = $null; $errors = $null
-                $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsDirectory "lib\$library"), [ref]$tokens, [ref]$errors)
-                $defined = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] -and $n.Name -ceq $name }, $true)).Count
-                $expectedCount = 0
-                if ($library -ceq "agent-exec.ps1") { $expectedCount = 1 }
-                Assert-Equal "$name defined in $library" $expectedCount $defined
+    Test-Case "AC-322 the wrappers are gone: not defined in agent-exec.ps1, no command in the libraries, no file under scripts\ or tests\ names them (FR-314)" {
+        $wrapperNames = @(("Invoke-Harness" + "Generate"), ("Test-Harness" + "ModelAvailable"))
+        $tokens = $null; $errors = $null
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile((Join-Path $scriptsDirectory "lib\agent-exec.ps1"), [ref]$tokens, [ref]$errors)
+        Assert-Equal "parse errors" 0 @($errors).Count
+        $definedNames = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) | ForEach-Object { $_.Name })
+        foreach ($name in $wrapperNames) {
+            if ($definedNames -contains $name) { throw "agent-exec.ps1 still defines $name" }
+        }
+        $found = & {
+            . (Join-Path $scriptsDirectory "lib\config.ps1")
+            . (Join-Path $scriptsDirectory "lib\telemetry.ps1")
+            . (Join-Path $scriptsDirectory "lib\agent-exec.ps1")
+            @($wrapperNames | Where-Object { $null -ne (Get-Command $_ -CommandType Function -ErrorAction SilentlyContinue) })
+        }
+        Assert-Equal "wrapper commands found after dot-sourcing" 0 @($found).Count
+        $repositoryRoot = Split-Path -Parent $scriptsDirectory
+        $naming = @()
+        foreach ($directory in @($scriptsDirectory, (Join-Path $repositoryRoot "tests"))) {
+            if (-not (Test-Path -LiteralPath $directory)) { continue }
+            foreach ($file in Get-ChildItem -LiteralPath $directory -File -Recurse) {
+                $text = [System.IO.File]::ReadAllText($file.FullName)
+                foreach ($name in $wrapperNames) {
+                    if ($text.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $naming += "$($file.Name) names $name" }
+                }
             }
         }
-        foreach ($script in @("run-agent.ps1", "review-spec.ps1", "revise-spec.ps1")) {
-            $text = Read-Utf8 (Join-Path $scriptsDirectory $script)
-            if ($text.Contains("Invoke-HarnessGenerate") -or $text.Contains("Test-HarnessModelAvailable")) { throw "$script still names a deprecated wrapper" }
-            if (-not $text.Contains("agent-exec.ps1")) { throw "$script does not dot-source agent-exec.ps1" }
-        }
+        Assert-Equal "files naming a wrapper" "" ($naming -join "; ")
     }
 }
 finally {

@@ -126,7 +126,7 @@ try {
             $after = @(Get-ChildItem Function:\ | ForEach-Object { $_.Name })
             [pscustomobject]@{ Output = $output; New = @($after | Where-Object { $before -notcontains $_ } | Sort-Object) }
         }
-        $expected = @("Get-AgentErrorCategory", "Get-AgentRetryDelaySec", "Invoke-AgentModel", "Invoke-HarnessGenerate", "Invoke-OllamaHttp", "New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt", "Reset-AgentExecState", "Test-AgentContextBudget", "Test-HarnessModelAvailable", "Test-OllamaModel") | Sort-Object
+        $expected = @("Get-AgentErrorCategory", "Get-AgentRetryDelaySec", "Invoke-AgentModel", "Invoke-OllamaHttp", "New-AgentPrompt", "New-AgentPromptPart", "New-RunAgentPrompt", "New-SpecRevisePrompt", "New-SpecReviewPrompt", "Reset-AgentExecState", "Test-AgentContextBudget", "Test-OllamaModel") | Sort-Object
         if ($result.Output.Count -ne 0) { "dot-sourcing produced output: $($result.Output -join '|')" }
         if (($result.New -join ",") -cne ($expected -join ",")) { "functions defined: $($result.New -join ', ')" }
     }
@@ -145,11 +145,7 @@ try {
             "Write-Host", "Write-Output", "Write-Warning", "Write-Error", "New-Object System.Net.WebClient")
         foreach ($command in $ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.CommandAst] }, $true)) {
             $name = [string]$command.GetCommandName()
-            # WP-2D2: the deprecated Test-HarnessModelAvailable prints the legacy lines (FR-202); no other function may print.
-            $owningFunction = $command.Parent
-            while ($null -ne $owningFunction -and -not ($owningFunction -is [System.Management.Automation.Language.FunctionDefinitionAst])) { $owningFunction = $owningFunction.Parent }
-            $deprecatedPrinter = ($name -ieq "Write-Host" -and $null -ne $owningFunction -and $owningFunction.Name -ceq "Test-HarnessModelAvailable")
-            if ($forbiddenCommands -contains $name -and -not $deprecatedPrinter) { $problems += "forbidden command: $name" }
+            if ($forbiddenCommands -contains $name) { $problems += "forbidden command: $name" }
             # WP-2C (AC-218): one Invoke-RestMethod call is allowed, and only inside Invoke-OllamaHttp.
             if ($name -ieq "Invoke-RestMethod") {
                 $owner = $command.Parent

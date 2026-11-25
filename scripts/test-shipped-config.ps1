@@ -198,7 +198,7 @@ try {
         Assert-Equal "maxAttempts" 2 $registry.ollama.maxAttempts
         Assert-Equal "retryBackoffSec" 5 $registry.ollama.retryBackoffSec
         Assert-True "warmup is the boolean false" (($registry.ollama.warmup -is [bool]) -and ($registry.ollama.warmup -eq $false))
-        Assert-Equal "charsPerToken" 4 $registry.defaults.charsPerToken
+        Assert-True "charsPerToken is the number 4 (D-211)" ([decimal]$registry.defaults.charsPerToken -eq [decimal]4)
         Assert-Equal "budgetMode" "warn" $registry.defaults.budgetMode
     }
 

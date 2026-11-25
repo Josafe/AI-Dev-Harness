@@ -1668,6 +1668,19 @@ try {
         Assert-Equal "status" "success" $record.status
     }
 
+    Test-Case "AC-203 (final QA N-9) the smallest charsPerToken the registry accepts (0.01) and the largest (10) with a 1,000,001-character prompt never throw: one request, the warning, the literal estimate" {
+        foreach ($case in @(@{ Chars = 0.01; Estimate = 100000100 }, @{ Chars = 10; Estimate = 100001 })) {
+            $registry = New-TestRegistry -CharsPerToken $case.Chars
+            $fake = New-FakeTransport -Steps @((New-Ok))
+            $caseRoot = New-CaseRoot
+            $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -System ("s" * 1000000) -Prompt "p" -TelemetryRoot $caseRoot
+            Assert-Equal "$($case.Chars) status" "ok" $result.status
+            Assert-Equal "$($case.Chars) estPromptTokens" $case.Estimate $result.meta.estPromptTokens
+            Assert-Equal "$($case.Chars) warning" "budget_exceeded" ($result.meta.warnings -join ",")
+            Assert-Equal "$($case.Chars) record est_prompt_tokens" $case.Estimate (@(Read-Records $caseRoot))[0].est_prompt_tokens
+        }
+    }
+
     Test-Case "AC-203 the default budgetMode is warn (a registry without the key): an oversized prompt is sent with the warning" {
         $registry = New-TestRegistry -CharsPerToken 4
         Assert-Equal "normalized budgetMode" "warn" $registry.defaults.budgetMode

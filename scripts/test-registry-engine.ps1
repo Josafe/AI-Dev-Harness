@@ -253,6 +253,37 @@ try {
         }
     }
 
+    Test-Case "AC-215 (final QA N-8, N-9) charsPerToken from 0.01 to 10 is valid; a huge value, a value near 0 and below 0.01 give registry_invalid: defaults.charsPerToken, never a conversion error, through the loader and the wrapper" {
+        $expected = [ordered]@{
+            "0.009" = $false; "0.0099999" = $false; "0.01" = $true; "0.011" = $true
+            "1e-28" = $false; "1E-300" = $false; "1e30" = $false; "1e300" = $false
+            "99999999999999999999" = $false; "9223372036854775807" = $false; "-0.01" = $false; "10" = $true; "10.000001" = $false
+        }
+        foreach ($entry in $expected.GetEnumerator()) {
+            $path = Write-EngineConfig -Defaults ('"charsPerToken": ' + $entry.Key)
+            if ($entry.Value) {
+                $registry = Get-HarnessRegistry -ConfigPath $path
+                Assert-True "charsPerToken $($entry.Key) is kept as a number" ([double]$registry.defaults.charsPerToken -gt 0)
+            }
+            else {
+                Assert-RejectedBoth "charsPerToken $($entry.Key)" $path "defaults.charsPerToken"
+            }
+        }
+    }
+
+    Test-Case "AC-215 (final QA N-8) a value that cannot be converted to a decimal is rejected with the token also when the registry is built from an object" {
+        foreach ($bad in @([double]1e30, [double]::MaxValue, [double]::PositiveInfinity, [double]::NegativeInfinity, [double]::NaN, [double]1e-28)) {
+            $config = [pscustomobject]@{
+                schemaVersion = 2
+                ollama        = [pscustomobject]@{ url = "http://127.0.0.1:9"; healthTimeoutSec = 15 }
+                defaults      = [pscustomobject]@{ charsPerToken = $bad }
+                profiles      = [pscustomobject]@{ alpha = [pscustomobject]@{ model = "test-model-a" } }
+                agents        = [pscustomobject]@{ spec = [pscustomobject]@{ profile = "alpha" } }
+            }
+            Assert-Throws "charsPerToken $bad" { ConvertTo-HarnessRegistry -Config $config } "registry_invalid: defaults.charsPerToken"
+        }
+    }
+
     Test-Case "AC-215 the first violated rule is the one named when two fields are invalid" {
         $path = Write-EngineConfig -Ollama '"maxAttempts": 0, "retryBackoffSec": 61' -Defaults '"charsPerToken": 0, "budgetMode": "off"'
         Assert-Throws "two bad fields" { Get-HarnessRegistry -ConfigPath $path } "registry_invalid: ollama.maxAttempts"

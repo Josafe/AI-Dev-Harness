@@ -180,10 +180,20 @@ function Assert-HarnessRegistryV2 {
         throw "registry_invalid: ollama.warmup (ollama.warmup must be true or false)"
     }
 
+    # The range is checked as [double]: a [decimal] cast of a huge value (1e30) throws
+    # a localized conversion error without the token (final QA N-8), and a value
+    # below 0.01 could overflow the decimal arithmetic of the budget (N-9). The
+    # comparison is written so that NaN is rejected too.
     $charsPerToken = Get-ConfigValue $defaults "charsPerToken" $null
-    if ($null -ne $charsPerToken -and
-        (-not (Test-HarnessNumber $charsPerToken) -or [decimal]$charsPerToken -le 0 -or [decimal]$charsPerToken -gt 10)) {
-        throw "registry_invalid: defaults.charsPerToken (defaults.charsPerToken must be a number greater than 0 and at most 10)"
+    if ($null -ne $charsPerToken) {
+        $charsPerTokenValid = $false
+        if (Test-HarnessNumber $charsPerToken) {
+            $charsPerTokenValue = [double]$charsPerToken
+            $charsPerTokenValid = ($charsPerTokenValue -ge 0.01 -and $charsPerTokenValue -le 10)
+        }
+        if (-not $charsPerTokenValid) {
+            throw "registry_invalid: defaults.charsPerToken (defaults.charsPerToken must be a number from 0.01 to 10)"
+        }
     }
 
     $budgetMode = Get-ConfigValue $defaults "budgetMode" $null

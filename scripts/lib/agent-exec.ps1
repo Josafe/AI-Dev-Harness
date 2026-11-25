@@ -368,7 +368,8 @@ function Get-AgentErrorCategory {
 # WP-2C: the engine core (FR-201, FR-204, FR-207, FR-210 to FR-216). Nothing here
 # runs at dot-source time: the caches below are created on first use.
 
-# Clears the per-process caches: the /api/tags result per URL and the set of
+# Clears the per-script-invocation caches (a script variable, not a process or
+# global one: each script started with & has its own, D3): the /api/tags result per URL and the set of
 # warmed models (FR-213, FR-215). Every in-process test calls it first.
 function Reset-AgentExecState {
     param()
@@ -383,8 +384,10 @@ function Reset-AgentExecState {
 # Invoke-RestMethod and the only catch that turns an exception into a failure
 # record. -Request: Url, Method, Body (UTF-8 bytes or $null), TimeoutSec, Purpose
 # (generate, warmup or tags). The call uses exactly -Uri, -Method, -TimeoutSec
-# and, for generate and warmup, -ContentType and -Body, and nothing else (the
-# fake hosts of the earlier phases declare exactly these parameters).
+# and, for generate and warmup, -ContentType and -Body, and nothing else. The fake
+# hosts of Phase 0 and Phase 1 declare these five parameters as a simple function,
+# which silently collects an extra one in $args; only the engine fake host of
+# test-engine-callsites.ps1 refuses and records any other (spec revision 3.3).
 # Returns { ok, response, httpStatus, failure } with failure = { exceptionType,
 # webStatus, body }. It never reads or returns the exception message: the HTTP
 # body comes from ErrorDetails (ToString gives the body text PowerShell stored
@@ -467,7 +470,7 @@ function Invoke-OllamaHttp {
 # Cached /api/tags lookup (FR-215). Returns { available, category, models, detail,
 # hint, httpStatus }: category is $null when the model is available, else the real
 # category (a transport category when /api/tags failed, model_not_installed when it
-# answered without the model). Only a successful answer is cached, per process and
+# answered without the model). Only a successful answer is cached, per script invocation and
 # URL (Reset-AgentExecState clears it). The model match is exact and
 # case-insensitive. It prints nothing. With -TelemetryRoot and a model that is not
 # available, it writes the one record of the call (model_called false); when the
@@ -852,7 +855,7 @@ function Invoke-AgentModel {
             Purpose    = 'generate'
         }
 
-        # 3. Optional warm-up, once per model and URL per process (FR-213).
+        # 3. Optional warm-up, once per model and URL per script invocation (FR-213, D3).
         if ([bool]$Registry.ollama.warmup) {
             $warmKey = "$url|$model".ToLowerInvariant()
             if ($script:AgentExecState.Warmed.ContainsKey($warmKey)) {

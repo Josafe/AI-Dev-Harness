@@ -475,7 +475,7 @@ function Get-MigrationProblems {
     }
     if ([string]$registry.defaults.profile -cne "fast") { $problems += "defaults.profile is not fast" }
 
-    $reserved = [ordered]@{ "fast" = 4096; "deep" = 8192; "review" = 8192 }
+    $reserved = [ordered]@{ "fast" = 4096; "deep" = 6144; "review" = 6144 }
     foreach ($name in $reserved.Keys) {
         $profile = $registry.profiles.PSObject.Properties[$name]
         if ($null -eq $profile) { continue }
@@ -513,14 +513,14 @@ function New-ExpectedMigration {
     $window = $V1Raw.options.num_ctx
     $profileCommon = { param($Model, $Reserved) [ordered]@{ model = $Model; contextWindow = $window; timeoutSec = $V1Raw.timeoutSec; reservedOutputTokens = $Reserved; think = "default" } }
 
-    $review = & $profileCommon $deep 8192
+    $review = & $profileCommon $deep 6144
     $review.options = [ordered]@{ temperature = 0.1; seed = 42 }
 
     $config = [ordered]@{
         schemaVersion = 2
         ollama        = [ordered]@{ url = $V1Raw.ollamaUrl; healthTimeoutSec = 15 }
         defaults      = [ordered]@{ profile = "fast"; options = [ordered]@{ temperature = $V1Raw.options.temperature }; safetyMarginRatio = 0.10; stripThinking = $V1Raw.stripThinking }
-        profiles      = [ordered]@{ fast = (& $profileCommon $fast 4096); deep = (& $profileCommon $deep 8192); review = $review }
+        profiles      = [ordered]@{ fast = (& $profileCommon $fast 4096); deep = (& $profileCommon $deep 6144); review = $review }
         agents        = [ordered]@{
             "spec"          = [ordered]@{ profile = "fast" }
             "spec-reviser"  = [ordered]@{ profile = "deep" }
@@ -862,7 +862,8 @@ try {
         "the reviewer has no seed"                    = { param($c) $c.profiles.review.options.Remove("seed") }
         "the developer is assigned to fast"           = { param($c) $c.agents.developer.profile = "fast" }
         "the review profile is missing"               = { param($c) $c.profiles.Remove("review"); $c.agents."spec-reviewer".profile = "deep" }
-        "deep reservedOutputTokens is 6144"           = { param($c) $c.profiles.deep.reservedOutputTokens = 6144 }
+        "deep reservedOutputTokens is 8192"           = { param($c) $c.profiles.deep.reservedOutputTokens = 8192 }
+        "review reservedOutputTokens is 8192"         = { param($c) $c.profiles.review.reservedOutputTokens = 8192 }
         "the timeout changed"                         = { param($c) foreach ($p in @("fast", "deep", "review")) { $c.profiles[$p].timeoutSec = 600 } }
         "the default profile is deep"                 = { param($c) $c.defaults.profile = "deep" }
         "an extra option changes the spec agent"      = { param($c) $c.profiles.fast.options = [ordered]@{ seed = 1 } }

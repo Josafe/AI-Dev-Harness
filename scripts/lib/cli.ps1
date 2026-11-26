@@ -1200,8 +1200,536 @@ function Invoke-HarnessCommandUnsupported {
 }
 
 # ---------------------------------------------------------------------------
-# Stubs: the commands whose logic belongs to later packages (B4 specify; B5 review, revise,
-# status, list; B8 scan, context). They accept the validated options and do nothing else.
+# Handler: specify (B4; FR-304, FR-305, FR-307, FR-308, FR-319, NFR-305)
+#
+#   Before the claim (one ERROR line, exit 2, nothing written): -Include (B8), unsafe
+#   artifact folders (FR-319), an unreadable or empty -TaskFile. Then the claim, the line
+#   RUN_ID:, AI_HARNESS_RUN_ID set to the run id (restored in a finally, so telemetry
+#   run_id equals the manifest runId), inputs\task.md, the manifest (running, stages
+#   pending), the checks before the first stage (registry_invalid, agent_not_found,
+#   artifact_exists or the -Overwrite move), the optional load-check stage, the B2
+#   workflow with a hook that checkpoints the manifest at every stage event, the FR-308
+#   outcome table, the final manifest, then ERROR: (nonzero exit) and MANIFEST: last.
+# ---------------------------------------------------------------------------
+
+$script:HarnessSpecifyAgents = @('spec', 'spec-reviewer', 'spec-reviser')
+$script:HarnessSpecifyMaxRevisions = 3
+
+# A planned stage of the manifest (FR-305): every stage key, status pending.
+function New-HarnessCliStage {
+    param([Parameter(Mandatory = $true)][string]$Id, [Parameter(Mandatory = $true)][string]$Kind, [AllowNull()][string]$Agent = $null, [int]$Attempt = 1)
+
+    $agentValue = $null
+    if (-not [string]::IsNullOrEmpty($Agent)) { $agentValue = $Agent }
+    return [ordered]@{
+        id             = $Id
+        kind           = $Kind
+        agent          = $agentValue
+        attempt        = $Attempt
+        status         = 'pending'
+        reason         = $null
+        startedAtUtc   = $null
+        durationMs     = $null
+        exitCode       = $null
+        resolution     = $null
+        budget         = $null
+        callId         = $null
+        engineAttempts = $null
+        callDurationMs = $null
+        warnings       = @()
+        contextSha256  = $null
+        verdict        = $null
+        output         = $null
+        error          = $null
+    }
+}
+
+function Find-HarnessCliStage {
+    param([Parameter(Mandatory = $true)]$Run, [Parameter(Mandatory = $true)][string]$Id, [int]$Attempt = 1)
+
+    foreach ($stage in $Run.Stages) {
+        if (([string]$stage.id) -ceq $Id -and [int]$stage.attempt -eq $Attempt) { return $stage }
+    }
+    return $null
+}
+
+# Appends codes to a stage's warnings (no duplicates, order kept).
+function Add-HarnessCliStageWarning {
+    param([Parameter(Mandatory = $true)]$Stage, [string[]]$Codes = @())
+
+    $list = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($code in @($Stage.warnings)) { if (-not $list.Contains([string]$code)) { $list.Add([string]$code) } }
+    foreach ($code in $Codes) { if (-not [string]::IsNullOrEmpty($code) -and -not $list.Contains($code)) { $list.Add($code) } }
+    $Stage.warnings = @($list.ToArray())
+}
+
+# The path below -Root, or $null when -Path is not below it.
+function Get-HarnessCliRelativePath {
+    param([Parameter(Mandatory = $true)][string]$Root, [Parameter(Mandatory = $true)][string]$Path)
+
+    $prefix = $Root.TrimEnd([char]'\') + '\'
+    if ($Path.StartsWith($prefix, [System.StringComparison]::OrdinalIgnoreCase) -and $Path.Length -gt $prefix.Length) { return $Path.Substring($prefix.Length) }
+    return $null
+}
+
+# Writes the manifest of a specify run (atomic, FR-305): stages, the union of the run and
+# stage warnings, and the artifacts (the replaced family, then each existing model output).
+function Save-HarnessCliRun {
+    param([Parameter(Mandatory = $true)]$Run)
+
+    $manifest = $Run.Manifest
+    $manifest.stages = @($Run.Stages.ToArray())
+
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($code in $Run.Warnings) { if (-not $warnings.Contains($code)) { $warnings.Add($code) } }
+    foreach ($stage in $Run.Stages) {
+        foreach ($code in @($stage.warnings)) { if (-not $warnings.Contains([string]$code)) { $warnings.Add([string]$code) } }
+    }
+    $manifest.warnings = @($warnings.ToArray())
+
+    $artifacts = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($artifact in $Run.Replaced) { $artifacts.Add($artifact) }
+    $roles = @{ 'spec-generate' = 'spec'; 'spec-review' = 'review'; 'spec-revise' = 'revised-spec' }
+    $listed = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($stage in $Run.Stages) {
+        if (([string]$stage.kind) -cne 'agent' -or $null -eq $stage.output -or $null -eq $stage.output.sha256) { continue }
+        $relative = Get-HarnessCliRelativePath -Root $Run.TargetPath -Path ([string]$stage.output.path)
+        if ($null -eq $relative -or $listed.Contains($relative.ToLowerInvariant())) { continue }
+        $listed.Add($relative.ToLowerInvariant())
+        $artifacts.Add([ordered]@{ role = [string]$roles[[string]$stage.id]; root = 'target'; path = $relative; sha256 = [string]$stage.output.sha256; trust = 'untrusted-draft' })
+    }
+    $manifest.artifacts = @($artifacts.ToArray())
+
+    Write-HarnessManifest -Path $Run.ManifestPath -Manifest $manifest
+}
+
+# One stage event (the hook of the workflow, and the load-check stage): checkpoints the
+# manifest. stage_begin: status running, start time, the telemetry offset of an agent
+# stage. stage_end: status, exit code, duration, reason, verdict, output hash, the
+# telemetry record (FR-307), a provisional error, the next round after a FAIL review.
+# Then the hook of Invoke-HarnessCli (tests), if any. A throw here is internal_error.
+function Invoke-HarnessCliSpecifyEvent {
+    param([Parameter(Mandatory = $true)]$Run, [Parameter(Mandatory = $true)][string]$EventName, [Parameter(Mandatory = $true)]$Data)
+
+    $id = [string]$Data.id
+    if ($EventName -ceq 'stage_begin') {
+        $attempt = 1
+        if ($null -ne $Data.attempt) { $attempt = [int]$Data.attempt }
+        $stage = Find-HarnessCliStage -Run $Run -Id $id -Attempt $attempt
+        if ($null -eq $stage) {
+            $stage = New-HarnessCliStage -Id $id -Kind ([string]$Data.kind) -Agent ([string]$Data.agent) -Attempt $attempt
+            $Run.Stages.Add($stage)
+        }
+        $stage.status = 'running'
+        $stage.startedAtUtc = Get-HarnessUtcTimestamp
+        $clock = @{ Watch = [System.Diagnostics.Stopwatch]::StartNew(); Offset = 0L }
+        if (([string]$stage.kind) -ceq 'agent') {
+            $offset = Get-HarnessCliTelemetryOffset -HarnessRoot $Run.Root
+            $clock.Offset = [long]$offset.Offset
+            if ($offset.LockTimedOut) { Add-HarnessCliStageWarning -Stage $stage -Codes @('telemetry_lock_timeout') }
+        }
+        $Run.Clock = $clock
+        $Run.Current = $stage
+        $Run.CurrentTelemetry = $null
+        Save-HarnessCliRun -Run $Run
+    }
+    elseif ($EventName -ceq 'stage_end') {
+        $stage = $Run.Current
+        if ($null -eq $stage -or ([string]$stage.id) -cne $id) { throw "internal_error: stage_end of '$id' without its stage_begin." }
+        $stage.status = [string]$Data.status
+        $stage.exitCode = $null
+        if ($null -ne $Data.exitCode) { $stage.exitCode = [int]$Data.exitCode }
+        $stage.durationMs = [long]$Run.Clock.Watch.ElapsedMilliseconds
+        $stage.reason = $null
+        if ($null -ne $Data.reason) { $stage.reason = Format-HarnessCliText -Text ([string]$Data.reason) -MaxLength 500 }
+        $stage.verdict = $null
+        if ($null -ne $Data.verdict) { $stage.verdict = [string]$Data.verdict }
+        if (-not [string]::IsNullOrEmpty([string]$Data.outputPath)) {
+            $outputPath = [string]$Data.outputPath
+            $sha = $null
+            if ([System.IO.File]::Exists($outputPath)) { $sha = Get-HarnessFileSha256 -Path $outputPath }
+            $stage.output = [ordered]@{ path = $outputPath; sha256 = $sha }
+        }
+
+        $fields = $null
+        if (([string]$stage.kind) -ceq 'agent') {
+            $telemetry = Get-HarnessCliStageTelemetry -HarnessRoot $Run.Root -RunId $Run.RunId -FromOffset ([long]$Run.Clock.Offset)
+            $fields = $telemetry.Fields
+            if ($null -ne $fields) {
+                $stage.callId = $fields.callId
+                $stage.engineAttempts = $fields.engineAttempts
+                $stage.callDurationMs = $fields.callDurationMs
+                $stage.resolution = $fields.resolution
+                $stage.budget = $fields.budget
+                Add-HarnessCliStageWarning -Stage $stage -Codes @($fields.warnings)
+            }
+            Add-HarnessCliStageWarning -Stage $stage -Codes @($telemetry.Warnings)
+        }
+        $Run.CurrentTelemetry = $fields
+
+        if ($stage.status -ceq 'failed') {
+            $engine = $null
+            $http = $null
+            $category = 'stage_failed'
+            if ($null -ne $fields) {
+                $engine = $fields.engineCategory
+                $http = $fields.httpStatus
+                $mapped = ConvertTo-HarnessCliCategory -EngineCategory $engine
+                if ($null -ne $mapped) { $category = $mapped }
+            }
+            $stage.error = New-HarnessCliError -Category $category -Message ([string]$stage.reason) -EngineCategory $engine -HttpStatus $http
+        }
+
+        # FR-305: the next round is planned only after a FAIL review, while revisions remain.
+        if ($id -ceq 'spec-review' -and ([string]$stage.verdict) -ceq 'FAIL' -and [int]$stage.attempt -le $script:HarnessSpecifyMaxRevisions) {
+            $revision = [int]$stage.attempt
+            foreach ($next in @(
+                    @{ Id = 'spec-revise'; Kind = 'agent'; Agent = 'spec-reviser'; Attempt = $revision },
+                    @{ Id = 'revised-validate'; Kind = 'deterministic'; Agent = $null; Attempt = $revision },
+                    @{ Id = 'spec-review'; Kind = 'agent'; Agent = 'spec-reviewer'; Attempt = ($revision + 1) })) {
+                if ($null -eq (Find-HarnessCliStage -Run $Run -Id $next.Id -Attempt $next.Attempt)) {
+                    $Run.Stages.Add((New-HarnessCliStage -Id $next.Id -Kind $next.Kind -Agent $next.Agent -Attempt $next.Attempt))
+                }
+            }
+        }
+        Save-HarnessCliRun -Run $Run
+
+        # FR-316: a loud line after a stage whose call reported a truncated prompt.
+        if (@($stage.warnings) -ccontains 'prompt_truncation_detected') { Write-Host ('WARNING: prompt_truncation_detected: ' + $id) }
+    }
+
+    if ($null -ne $Run.ExternalHook) { $null = & $Run.ExternalHook -EventName $EventName -Data $Data }
+}
+
+# The end of a run: every stage still pending is skipped (dependency failed: <id> after
+# a failed stage, else not reached: <category>), a stage still running failed, the run
+# fields, validation (an invalid manifest becomes internal_error), the last write.
+function Complete-HarnessCliSpecifyRun {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)][string]$Status,
+        [Parameter(Mandatory = $true)][int]$ExitCode,
+        $RunError = $null
+    )
+
+    $failedId = $null
+    foreach ($stage in $Run.Stages) {
+        if (([string]$stage.status) -ceq 'running') {
+            $stage.status = 'failed'
+            if ($null -eq $stage.reason) { $stage.reason = 'The stage did not finish: the run ended with an internal error.' }
+            if ($null -eq $stage.error -and $null -ne $RunError) { $stage.error = $RunError }
+        }
+        if ($null -eq $failedId -and ([string]$stage.status) -ceq 'failed') { $failedId = [string]$stage.id }
+    }
+    $category = 'internal_error'
+    if ($null -ne $RunError) { $category = [string]$RunError.category }
+    foreach ($stage in $Run.Stages) {
+        if (([string]$stage.status) -ceq 'pending') {
+            $stage.status = 'skipped'
+            if ($null -ne $failedId) { $stage.reason = 'dependency failed: ' + $failedId }
+            else { $stage.reason = 'not reached: ' + $category }
+        }
+    }
+
+    $manifest = $Run.Manifest
+    $manifest.status = $Status
+    $manifest.exitCode = $ExitCode
+    $manifest.endedAtUtc = Get-HarnessUtcTimestamp
+    $manifest.error = $RunError
+    $Run.ExitCode = $ExitCode
+    $Run.Error = $RunError
+
+    $manifest.stages = @($Run.Stages.ToArray())
+    $check = Test-HarnessManifest -Manifest (ConvertTo-Json -InputObject (ConvertTo-HarnessPlainData -Value $manifest) -Depth 10)
+    if (-not $check.valid) {
+        $invalid = New-HarnessCliError -Category 'internal_error' -Message ('the manifest is not valid: ' + (@($check.errors) -join '; '))
+        $manifest.status = 'failed'
+        $manifest.exitCode = 2
+        $manifest.error = $invalid
+        $Run.ExitCode = 2
+        $Run.Error = $invalid
+    }
+    Save-HarnessCliRun -Run $Run
+}
+
+# A failure before the first stage (registry_invalid, agent_not_found, artifact_exists):
+# no stage ran; every planned stage is skipped with not reached: <category>.
+function Stop-HarnessCliSpecifyRun {
+    param([Parameter(Mandatory = $true)]$Run, [Parameter(Mandatory = $true)][string]$Category, [Parameter(Mandatory = $true)][string]$Message)
+
+    Complete-HarnessCliSpecifyRun -Run $Run -Status 'failed' -ExitCode 2 -RunError (New-HarnessCliError -Category $Category -Message $Message)
+}
+
+# The load-check stage (FR-318): one Test-OllamaModelLoad per distinct (model, effective
+# options) of the three agents, as the run resolves them (-Model, -Profile). Returns
+# $true when every model loaded; on a failure the stage is failed and the run completed.
+function Invoke-HarnessCliLoadCheck {
+    param([Parameter(Mandatory = $true)]$Run, [Parameter(Mandatory = $true)]$Registry, [Parameter(Mandatory = $true)][object[]]$Executions)
+
+    Invoke-HarnessCliSpecifyEvent -Run $Run -EventName 'stage_begin' -Data @{ id = 'load-check'; kind = 'deterministic'; agent = $null; attempt = 1 }
+    $seen = New-Object 'System.Collections.Generic.List[string]'
+    $failure = $null
+    foreach ($execution in $Executions) {
+        $key = ([string]$execution.model).ToLowerInvariant() + '|' + (ConvertTo-Json -InputObject $execution.options -Compress -Depth 5)
+        if ($seen.Contains($key)) { continue }
+        $seen.Add($key)
+        $load = Test-OllamaModelLoad -Execution $execution -Registry $Registry
+        if (-not $load.loaded) { $failure = $load; break }
+    }
+    if ($null -eq $failure) {
+        Invoke-HarnessCliSpecifyEvent -Run $Run -EventName 'stage_end' -Data @{ id = 'load-check'; status = 'succeeded'; exitCode = $null; outputPath = $null; verdict = $null; reason = $null }
+        return $true
+    }
+
+    $loadError = Get-HarnessLoadCheckError -LoadResult $failure
+    Invoke-HarnessCliSpecifyEvent -Run $Run -EventName 'stage_end' -Data @{ id = 'load-check'; status = 'failed'; exitCode = $null; outputPath = $null; verdict = $null; reason = $loadError.message }
+    $category = ConvertTo-HarnessCliCategory -EngineCategory ([string]$failure.category)
+    if ($null -eq $category) { $category = 'stage_failed' }
+    $runError = New-HarnessCliError -Category $category -Message $loadError.message -EngineCategory ([string]$failure.category) -HttpStatus $null -Hint $loadError.hint
+    $stage = Find-HarnessCliStage -Run $Run -Id 'load-check' -Attempt 1
+    $stage.error = $runError
+    Complete-HarnessCliSpecifyRun -Run $Run -Status 'failed' -ExitCode 2 -RunError $runError
+    return $false
+}
+
+# The run after the claim. Fills $Run.ExitCode and $Run.Error; prints only what the stages
+# and the workflow print (and the FR-316 warning lines).
+function Invoke-HarnessCliSpecifyRun {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Options,
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$TaskText,
+        [AllowNull()][string]$TaskFile = $null
+    )
+
+    $root = $Run.Root
+    $name = [string]$Options['Name']
+
+    # NFR-305: the task text is written here and nowhere else by the CLI.
+    $inputs = Join-Path $Run.RunPath 'inputs'
+    [void][System.IO.Directory]::CreateDirectory($inputs)
+    $taskPath = Join-Path $inputs 'task.md'
+    [System.IO.File]::WriteAllText($taskPath, $TaskText, (New-Object System.Text.UTF8Encoding($false)))
+
+    $manifest = New-HarnessCliManifest -RunId $Run.RunId -Workflow 'specify' -HarnessRoot $root -TargetPath $Run.TargetPath -Warnings @($Run.Warnings)
+    $modelOverride = $null
+    $profileOverride = $null
+    if ($Options.Contains('Model')) { $modelOverride = [string]$Options['Model'] }
+    if ($Options.Contains('Profile')) { $profileOverride = [string]$Options['Profile'] }
+    $taskFileValue = $null
+    if (-not [string]::IsNullOrEmpty($TaskFile)) { $taskFileValue = $TaskFile }
+    $manifest.request = [ordered]@{
+        name         = $name
+        mode         = [string]$Options['Mode']
+        maxRevisions = $script:HarnessSpecifyMaxRevisions
+        taskSha256   = (Get-HarnessFileSha256 -Path $taskPath)
+        taskFile     = $taskFileValue
+        include      = @()
+        revision     = $null
+        overrides    = [ordered]@{ model = $modelOverride; profile = $profileOverride }
+    }
+    $Run.Manifest = $manifest
+    if ($Options.Contains('LoadCheck')) { $Run.Stages.Add((New-HarnessCliStage -Id 'load-check' -Kind 'deterministic')) }
+    $Run.Stages.Add((New-HarnessCliStage -Id 'spec-generate' -Kind 'agent' -Agent 'spec'))
+    $Run.Stages.Add((New-HarnessCliStage -Id 'spec-validate' -Kind 'deterministic'))
+    $Run.Stages.Add((New-HarnessCliStage -Id 'spec-review' -Kind 'agent' -Agent 'spec-reviewer'))
+    Save-HarnessCliRun -Run $Run
+
+    # Checked before the first stage (FR-308): the registry and the resolution of the three
+    # agents (an unknown -Profile included), then their agent files.
+    $registry = $null
+    $executions = New-Object 'System.Collections.Generic.List[object]'
+    try {
+        $registry = Get-HarnessCliRegistry -HarnessRoot $root
+        foreach ($agent in $script:HarnessSpecifyAgents) {
+            $resolveArguments = @{ Agent = $agent; Registry = $registry }
+            if ($null -ne $modelOverride) { $resolveArguments.Model = $modelOverride }
+            if ($null -ne $profileOverride) { $resolveArguments.Profile = $profileOverride }
+            $executions.Add((Resolve-HarnessExecution @resolveArguments))
+        }
+    }
+    catch {
+        Stop-HarnessCliSpecifyRun -Run $Run -Category 'registry_invalid' -Message (Get-HarnessCliTokenText -Message ([string]$_.Exception.Message) -Token 'registry_invalid')
+        return
+    }
+    foreach ($agent in $script:HarnessSpecifyAgents) {
+        $agentFile = Join-Path (Join-Path (Join-Path $root '.ai') 'agents') ($agent + '.md')
+        if (-not [System.IO.File]::Exists($agentFile)) {
+            Stop-HarnessCliSpecifyRun -Run $Run -Category 'agent_not_found' -Message ("The agent file .ai\agents\" + $agent + ".md does not exist.")
+            return
+        }
+    }
+
+    # FR-319: the family of the name is refused, or moved to runs\<id>\replaced\ first.
+    $family = @(Get-HarnessCliSpecFamily -SpecDirectory $Run.SpecDirectory -Name $name)
+    if ($family.Count -gt 0) {
+        if (-not $Options.Contains('Overwrite')) {
+            $leaves = @($family | ForEach-Object { [System.IO.Path]::GetFileName($_) })
+            Stop-HarnessCliSpecifyRun -Run $Run -Category 'artifact_exists' -Message ("The specification family of '" + $name + "' already exists in <target>\.ai-harness\specs (" + ($leaves -join ', ') + '); use -Overwrite to replace it.')
+            return
+        }
+        $replacedDirectory = Join-Path $Run.RunPath 'replaced'
+        foreach ($moved in @(Move-HarnessCliSpecFamily -Files $family -Destination $replacedDirectory)) {
+            $Run.Replaced.Add([ordered]@{ role = 'replaced'; root = 'run'; path = ('replaced\' + $moved.name); sha256 = [string]$moved.sha256; trust = 'untrusted-draft' })
+        }
+        Save-HarnessCliRun -Run $Run
+    }
+
+    if ($Options.Contains('LoadCheck')) {
+        if (-not (Invoke-HarnessCliLoadCheck -Run $Run -Registry $registry -Executions @($executions.ToArray()))) { return }
+    }
+
+    # The B2 workflow (FR-303) with the checkpoint hook. The hook finds the run through the
+    # call stack ($harnessSpecifyRun of Invoke-HarnessCommandSpecify, dynamic scope).
+    $hook = { param($EventName, $Data) Invoke-HarnessCliSpecifyEvent -Run $harnessSpecifyRun -EventName $EventName -Data $Data }
+    $scripts = $Context.StageScripts
+    $result = @{}
+    $workflowArguments = @{
+        RunnerScript    = [string]$scripts['runner']
+        ValidatorScript = [string]$scripts['validator']
+        ReviewerScript  = [string]$scripts['reviewer']
+        ReviserScript   = [string]$scripts['reviser']
+        Mode            = [string]$Options['Mode']
+        Task            = $TaskText
+        Name            = $name
+        OutputDirectory = $Run.SpecDirectory
+        Hook            = $hook
+        Result          = $result
+    }
+    if ($null -ne $modelOverride) { $workflowArguments.Model = $modelOverride }
+    if ($null -ne $profileOverride) { $workflowArguments.Profile = $profileOverride }
+    Invoke-SpecifyWorkflow @workflowArguments
+
+    # FR-308 outcome table: the workflow decides the exit code; the category of a failed
+    # runner, reviser or reviewer comes from the stage's telemetry record when it has one.
+    if (([string]$result.outcome) -ceq 'passed') {
+        Complete-HarnessCliSpecifyRun -Run $Run -Status 'succeeded' -ExitCode 0 -RunError $null
+        return
+    }
+    $category = [string]$result.category
+    if ([string]::IsNullOrEmpty($category)) { $category = 'internal_error' }
+    $message = [string]$result.message
+    $decider = $Run.Current
+    if ($null -ne $decider -and ([string]$decider.id) -cne [string]$result.stage) { $decider = $null }
+    $engine = $null
+    $http = $null
+    $fields = $null
+    if ($null -ne $decider -and ([string]$decider.kind) -ceq 'agent') { $fields = $Run.CurrentTelemetry }
+    if ($null -ne $fields) { $engine = $fields.engineCategory; $http = $fields.httpStatus }
+    if ($category -ceq 'stage_failed' -and $null -ne $decider) {
+        $useRecord = $false
+        $deciderId = [string]$decider.id
+        if ($deciderId -ceq 'spec-generate' -or $deciderId -ceq 'spec-revise') {
+            $useRecord = (([string]$result.errorSource) -ceq 'stage') -or ($null -ne $decider.exitCode -and [int]$decider.exitCode -ne 0)
+        }
+        elseif ($deciderId -ceq 'spec-review') {
+            $useRecord = ($null -ne $decider.exitCode -and [int]$decider.exitCode -eq 2)
+        }
+        $mapped = ConvertTo-HarnessCliCategory -EngineCategory $engine
+        if ($useRecord -and $null -ne $mapped) {
+            $category = $mapped
+            if ($null -ne $fields.errorText) { $message = $fields.errorText }
+        }
+    }
+    $runError = New-HarnessCliError -Category $category -Message $message -EngineCategory $engine -HttpStatus $http
+    if ($null -ne $decider -and ([string]$decider.status) -ceq 'failed') { $decider.error = $runError }
+    $status = 'failed'
+    if (([string]$result.outcome) -ceq 'needs_input') { $status = 'needs_input' }
+    Complete-HarnessCliSpecifyRun -Run $Run -Status $status -ExitCode ([int]$result.cliExitCode) -RunError $runError
+}
+
+function Invoke-HarnessCommandSpecify {
+    param($Command, $Options, $Context)
+
+    $root = [string]$Context.HarnessRoot
+    $targetPath = [string]$Options['TargetPath']
+
+    # Before the claim: one ERROR line, exit 2, nothing written (FR-308).
+    if ($Options.Contains('Include')) {
+        Write-HarnessCliError -Token 'internal_error' -Text "'-Include' (repository context, B8) is not implemented in this build."
+        $Context.ExitCode = 2
+        return
+    }
+    $unsafe = Test-HarnessCliArtifactDirectory -TargetPath $targetPath
+    if ($null -ne $unsafe) {
+        Write-HarnessCliError -Token 'invalid_arguments' -Text $unsafe
+        $Context.ExitCode = 2
+        return
+    }
+    $taskFile = $null
+    $taskText = $null
+    if ($Options.Contains('TaskFile')) {
+        $taskFile = [string]$Options['TaskFile']
+        try { $taskText = Read-HarnessTextFile -Path $taskFile }
+        catch { Write-HarnessCliError -Token 'invalid_arguments' -Text '-TaskFile cannot be read.'; $Context.ExitCode = 2; return }
+        if ([string]::IsNullOrWhiteSpace($taskText)) { Write-HarnessCliError -Token 'invalid_arguments' -Text '-TaskFile is empty.'; $Context.ExitCode = 2; return }
+    }
+    else { $taskText = [string]$Options['Task'] }
+
+    $runIdArgument = $null
+    if ($Options.Contains('RunId')) { $runIdArgument = [string]$Options['RunId'] }
+    $previousRunId = $env:AI_HARNESS_RUN_ID
+    $claim = $null
+    try { $claim = New-HarnessRunClaim -HarnessRoot $root -RunId $runIdArgument -EnvRunId $previousRunId }
+    catch {
+        $message = [string]$_.Exception.Message
+        if ($message.StartsWith('invalid_arguments:', [System.StringComparison]::Ordinal)) { Write-HarnessCliError -Token 'invalid_arguments' -Text (Get-HarnessCliTokenText -Message $message -Token 'invalid_arguments') }
+        else { Write-HarnessCliError -Token 'internal_error' -Text (Get-HarnessCliTokenText -Message $message -Token 'internal_error') }
+        $Context.ExitCode = 2
+        return
+    }
+    Write-Output ('RUN_ID: ' + $claim.RunId)
+
+    $harnessSpecifyRun = @{
+        Root             = $root
+        RunId            = [string]$claim.RunId
+        RunPath          = [string]$claim.RunPath
+        ManifestPath     = [string]$claim.ManifestPath
+        TargetPath       = $targetPath
+        SpecDirectory    = (Get-HarnessCliSpecDirectory -TargetPath $targetPath)
+        Warnings         = @($claim.Warnings)
+        Manifest         = $null
+        Stages           = (New-Object 'System.Collections.Generic.List[object]')
+        Replaced         = (New-Object 'System.Collections.Generic.List[object]')
+        Current          = $null
+        CurrentTelemetry = $null
+        Clock            = $null
+        ExternalHook     = $Context.Hook
+        ExitCode         = 2
+        Error            = $null
+    }
+    try {
+        # FR-304: the stages see the run id; telemetry run_id equals the manifest runId.
+        $env:AI_HARNESS_RUN_ID = $claim.RunId
+        Invoke-HarnessCliSpecifyRun -Run $harnessSpecifyRun -Options $Options -Context $Context -TaskText $taskText -TaskFile $taskFile
+    }
+    catch {
+        $internal = New-HarnessCliError -Category 'internal_error' -Message ([string]$_.Exception.Message)
+        $harnessSpecifyRun.ExitCode = 2
+        $harnessSpecifyRun.Error = $internal
+        if ($null -ne $harnessSpecifyRun.Manifest) {
+            try { Complete-HarnessCliSpecifyRun -Run $harnessSpecifyRun -Status 'failed' -ExitCode 2 -RunError $internal }
+            catch { $harnessSpecifyRun.Error = New-HarnessCliError -Category 'internal_error' -Message ([string]$_.Exception.Message) }
+        }
+    }
+    finally {
+        $env:AI_HARNESS_RUN_ID = $previousRunId
+    }
+
+    if ($harnessSpecifyRun.ExitCode -ne 0) {
+        $category = 'internal_error'
+        $text = 'The run failed.'
+        if ($null -ne $harnessSpecifyRun.Error) { $category = [string]$harnessSpecifyRun.Error.category; $text = [string]$harnessSpecifyRun.Error.message }
+        Write-HarnessCliError -Token $category -Text $text
+    }
+    Write-Output ('MANIFEST: ' + $claim.ManifestPath)
+    $Context.ExitCode = [int]$harnessSpecifyRun.ExitCode
+}
+
+# ---------------------------------------------------------------------------
+# Stubs: the commands whose logic belongs to later packages (B5 review, revise, status,
+# list; B8 scan, context). They accept the validated options and do nothing else.
 # ---------------------------------------------------------------------------
 
 function Write-HarnessCliNotImplemented {
@@ -1211,7 +1739,6 @@ function Write-HarnessCliNotImplemented {
     $Context.ExitCode = 2
 }
 
-function Invoke-HarnessCommandSpecify { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 function Invoke-HarnessCommandReview { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 function Invoke-HarnessCommandRevise { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 function Invoke-HarnessCommandScan { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }

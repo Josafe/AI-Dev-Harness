@@ -408,8 +408,8 @@ try {
         }
     }
 
+    # B4 implemented 'specify' (scripts\test-harness-e2e.ps1 covers it); the stubs that remain:
     foreach ($case in @(
-            @{ Label = "specify"; Args = (New-ArgumentList "specify" @("TargetPath", "Name", "Task")) },
             @{ Label = "review"; Args = (New-ArgumentList "review" @("TargetPath", "Name", "Task")) },
             @{ Label = "revise"; Args = (New-ArgumentList "revise" @("TargetPath", "Name", "Revision", "Task")) },
             @{ Label = "scan"; Args = (New-ArgumentList "scan" @("TargetPath")) },

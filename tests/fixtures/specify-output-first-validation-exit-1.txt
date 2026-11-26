@@ -1,0 +1,19 @@
+
+=== Specification Workflow ===
+Name  : demo
+Model : (resolved per agent from config)
+Mode  : requirements
+
+Step 1 - Generating specification...
+
+ANSWER runner 1
+=== MOCK RUNNER (SCENARIO) === ok
+
+Step 2 - Validating specification structure...
+
+ANSWER validator 1
+=== MOCK VALIDATOR (SCENARIO) === exit1
+
+=== Specification Workflow Failed ===
+Generated specification failed structural validation.
+File: <HARNESS>\specs\demo.md

@@ -1,0 +1,32 @@
+
+=== Specification Workflow ===
+Name  : demo
+Model : (resolved per agent from config)
+Mode  : requirements
+
+Step 1 - Generating specification...
+
+ANSWER runner 1
+=== MOCK RUNNER (SCENARIO) === ok
+
+Step 2 - Validating specification structure...
+
+ANSWER validator 1
+=== MOCK VALIDATOR (SCENARIO) === ok
+
+Review iteration 1
+Specification: <HARNESS>\specs\demo.md
+
+Reviewing specification semantics...
+
+ANSWER reviewer 1
+=== MOCK REVIEWER (SCENARIO) === fail
+
+Semantic review failed.
+Starting revision 1/3...
+
+ANSWER reviser 1
+=== MOCK REVISER (SCENARIO) === throw
+
+=== Specification Workflow Failed ===
+ERROR: mock reviser failure

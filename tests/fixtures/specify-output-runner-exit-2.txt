@@ -1,0 +1,13 @@
+
+=== Specification Workflow ===
+Name  : demo
+Model : (resolved per agent from config)
+Mode  : requirements
+
+Step 1 - Generating specification...
+
+ANSWER runner 1
+=== MOCK RUNNER (SCENARIO) === exit2
+
+=== Specification Workflow Failed ===
+Specification agent failed.

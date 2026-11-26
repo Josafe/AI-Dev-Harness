@@ -1,0 +1,63 @@
+{
+  "source": "git tag phase2-calibrated, read with the PowerShell parser",
+  "scripts": {
+    "benchmark-models.ps1": [
+      { "name": "Agent", "type": "string", "mandatory": false },
+      { "name": "Task", "type": "string", "mandatory": true },
+      { "name": "Models", "type": "string[]", "mandatory": false },
+      { "name": "Repetitions", "type": "int", "mandatory": false },
+      { "name": "OutputDirectory", "type": "string", "mandatory": false },
+      { "name": "SkipWarmUp", "type": "switch", "mandatory": false }
+    ],
+    "build-context.ps1": [
+      { "name": "ManifestFile", "type": "string", "mandatory": true },
+      { "name": "Include", "type": "string[]", "mandatory": true },
+      { "name": "OutputFile", "type": "string", "mandatory": true },
+      { "name": "MaxTotalChars", "type": "int", "mandatory": false },
+      { "name": "MaxFileBytes", "type": "int", "mandatory": false }
+    ],
+    "review-spec.ps1": [
+      { "name": "Task", "type": "string", "mandatory": true },
+      { "name": "SpecFile", "type": "string", "mandatory": true },
+      { "name": "Mode", "type": "string", "mandatory": false },
+      { "name": "Model", "type": "string", "mandatory": false },
+      { "name": "OutputFile", "type": "string", "mandatory": false },
+      { "name": "Profile", "type": "string", "mandatory": false }
+    ],
+    "revise-spec.ps1": [
+      { "name": "Task", "type": "string", "mandatory": true },
+      { "name": "SpecFile", "type": "string", "mandatory": true },
+      { "name": "ReviewFile", "type": "string", "mandatory": true },
+      { "name": "Mode", "type": "string", "mandatory": false },
+      { "name": "Model", "type": "string", "mandatory": false },
+      { "name": "OutputFile", "type": "string", "mandatory": false },
+      { "name": "Profile", "type": "string", "mandatory": false }
+    ],
+    "run-agent.ps1": [
+      { "name": "Agent", "type": "string", "mandatory": false },
+      { "name": "Task", "type": "string", "mandatory": false },
+      { "name": "Model", "type": "string", "mandatory": false },
+      { "name": "OutputFile", "type": "string", "mandatory": false },
+      { "name": "ContextFile", "type": "string", "mandatory": false },
+      { "name": "Profile", "type": "string", "mandatory": false }
+    ],
+    "scan-repository.ps1": [
+      { "name": "RootPath", "type": "string", "mandatory": true },
+      { "name": "OutputFile", "type": "string", "mandatory": true }
+    ],
+    "specify.ps1": [
+      { "name": "Task", "type": "string", "mandatory": true },
+      { "name": "Name", "type": "string", "mandatory": true },
+      { "name": "Model", "type": "string", "mandatory": false },
+      { "name": "Mode", "type": "string", "mandatory": false },
+      { "name": "RunnerScript", "type": "string", "mandatory": false },
+      { "name": "ValidatorScript", "type": "string", "mandatory": false },
+      { "name": "ReviewerScript", "type": "string", "mandatory": false },
+      { "name": "ReviserScript", "type": "string", "mandatory": false }
+    ],
+    "validate-spec.ps1": [
+      { "name": "SpecFile", "type": "string", "mandatory": true },
+      { "name": "Mode", "type": "string", "mandatory": false }
+    ]
+  }
+}

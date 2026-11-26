@@ -1,0 +1,87 @@
+
+=== Specification Workflow ===
+Name  : demo
+Model : (resolved per agent from config)
+Mode  : requirements
+
+Step 1 - Generating specification...
+
+ANSWER runner 1
+=== MOCK RUNNER (SCENARIO) === ok
+
+Step 2 - Validating specification structure...
+
+ANSWER validator 1
+=== MOCK VALIDATOR (SCENARIO) === ok
+
+Review iteration 1
+Specification: <HARNESS>\specs\demo.md
+
+Reviewing specification semantics...
+
+ANSWER reviewer 1
+=== MOCK REVIEWER (SCENARIO) === fail
+
+Semantic review failed.
+Starting revision 1/3...
+
+ANSWER reviser 1
+=== MOCK REVISER (SCENARIO) === ok
+
+Validating revised specification structure...
+
+ANSWER validator 2
+=== MOCK VALIDATOR (SCENARIO) === ok
+
+Review iteration 2
+Specification: <HARNESS>\specs\demo.revised-v1.md
+
+Reviewing specification semantics...
+
+ANSWER reviewer 2
+=== MOCK REVIEWER (SCENARIO) === fail
+
+Semantic review failed.
+Starting revision 2/3...
+
+ANSWER reviser 2
+=== MOCK REVISER (SCENARIO) === ok
+
+Validating revised specification structure...
+
+ANSWER validator 3
+=== MOCK VALIDATOR (SCENARIO) === ok
+
+Review iteration 3
+Specification: <HARNESS>\specs\demo.revised-v2.md
+
+Reviewing specification semantics...
+
+ANSWER reviewer 3
+=== MOCK REVIEWER (SCENARIO) === fail
+
+Semantic review failed.
+Starting revision 3/3...
+
+ANSWER reviser 3
+=== MOCK REVISER (SCENARIO) === ok
+
+Validating revised specification structure...
+
+ANSWER validator 4
+=== MOCK VALIDATOR (SCENARIO) === ok
+
+Review iteration 4
+Specification: <HARNESS>\specs\demo.revised-v3.md
+
+Reviewing specification semantics...
+
+ANSWER reviewer 4
+=== MOCK REVIEWER (SCENARIO) === fail
+
+=== Specification Workflow Failed ===
+Maximum revision attempts reached (3).
+
+Specification: <HARNESS>\specs\demo.revised-v3.md
+Review       : <HARNESS>\specs\demo.revised-v3.review.md
+

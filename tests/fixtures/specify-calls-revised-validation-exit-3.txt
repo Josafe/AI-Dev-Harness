@@ -1,0 +1,5 @@
+runner|Agent=spec|OutputFile=<OUT>\\demo.md|Task=SPECIFICATION MODE (AUTHORITATIVE):\r\nrequirements\r\n\r\nORIGINAL USER REQUEST:\r\nDeterministic test task
+validator|Mode=requirements|SpecFile=<OUT>\\demo.md
+reviewer|Mode=requirements|OutputFile=<OUT>\\demo.review.md|SpecFile=<OUT>\\demo.md|Task=Deterministic test task
+reviser|Mode=requirements|OutputFile=<OUT>\\demo.revised-v1.md|ReviewFile=<OUT>\\demo.review.md|SpecFile=<OUT>\\demo.md|Task=Deterministic test task
+validator|Mode=requirements|SpecFile=<OUT>\\demo.revised-v1.md

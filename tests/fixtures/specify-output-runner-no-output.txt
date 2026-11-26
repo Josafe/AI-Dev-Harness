@@ -1,0 +1,13 @@
+
+=== Specification Workflow ===
+Name  : demo
+Model : (resolved per agent from config)
+Mode  : requirements
+
+Step 1 - Generating specification...
+
+ANSWER runner 1
+=== MOCK RUNNER (SCENARIO) === nooutput
+
+=== Specification Workflow Failed ===
+Specification file is missing or empty: <HARNESS>\specs\demo.md

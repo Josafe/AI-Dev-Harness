@@ -1,0 +1,5 @@
+
+=== Specification Workflow Failed ===
+Invalid specification name: ../outside
+Use only letters, numbers, dots, underscores and hyphens.
+The name must start with a letter or number.

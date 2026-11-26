@@ -13,7 +13,9 @@ param(
     [string]$RunnerScript,
     [string]$ValidatorScript,
     [string]$ReviewerScript,
-    [string]$ReviserScript
+    [string]$ReviserScript,
+
+    [string]$Profile
 )
 
 $ErrorActionPreference = "Stop"
@@ -36,9 +38,13 @@ if ($Name -notmatch '^[a-zA-Z0-9][a-zA-Z0-9._-]*$') {
     exit 2
 }
 
+# The workflow lives in lib\workflow.ps1 (Phase 3 FR-303), shared with the CLI.
+# This script is the legacy front end: same parameters (plus -Profile), folder,
+# file names, maxRevisions, exit codes and console lines; it passes no hook, run
+# directory or context and writes no manifest (D-303).
+. (Join-Path $PSScriptRoot "lib\workflow.ps1")
+
 $specDirectory = Join-Path $root "specs"
-$specFile = Join-Path $specDirectory "$Name.md"
-$reviewFile = Join-Path $specDirectory "$Name.review.md"
 
 $runner = if ($RunnerScript) {
     $RunnerScript
@@ -68,316 +74,31 @@ else {
     Join-Path $PSScriptRoot "revise-spec.ps1"
 }
 
-$maxRevisions = 3
-
-$modelArgs = @{}
+$workflowArguments = @{
+    RunnerScript    = $runner
+    ValidatorScript = $validator
+    ReviewerScript  = $reviewer
+    ReviserScript   = $reviser
+    Mode            = $Mode
+    Task            = $Task
+    Name            = $Name
+    OutputDirectory = $specDirectory
+}
 if ($PSBoundParameters.ContainsKey('Model')) {
-    $modelArgs.Model = $Model
+    $workflowArguments.Model = $Model
 }
-$modelLabel = if ($modelArgs.Count -gt 0) { $Model } else { "(resolved per agent from config)" }
-
-if (-not (Test-Path $runner)) {
-    throw "Agent runner not found: $runner"
-}
-
-if (-not (Test-Path $validator)) {
-    throw "Specification validator not found: $validator"
+# -Profile is passed to the three agent scripts only when bound (FR-303).
+if ($PSBoundParameters.ContainsKey('Profile')) {
+    $workflowArguments.Profile = $Profile
 }
 
-if (-not (Test-Path $reviewer)) {
-    throw "Specification reviewer not found: $reviewer"
+$workflowResult = @{}
+Invoke-SpecifyWorkflow @workflowArguments -Result $workflowResult
+
+# A throw (a stage, a missing script, -Model with -Profile) is rethrown, so the
+# trap above prints it and exits 2 as before.
+if ($null -ne $workflowResult.error) {
+    throw $workflowResult.error
 }
 
-if (-not (Test-Path $reviser)) {
-    throw "Specification reviser not found: $reviser"
-}
-
-if (-not (Test-Path $specDirectory)) {
-    New-Item -ItemType Directory -Path $specDirectory -Force | Out-Null
-}
-
-# Pass -Mode only to a validator that declares it (FR-008). Get-Command only
-# parses the script. If the check fails, the validator is called as before
-# (FR-019) and the run continues; any later failure happens as it does today.
-$validatorArgs = @{}
-$validatorModeCheck = "declared"
-$validatorModeReason = ""
-try {
-    $validatorParameters = (Get-Command -Name $validator -CommandType ExternalScript -ErrorAction Stop).Parameters
-    if ($null -eq $validatorParameters) {
-        $validatorModeCheck = "not confirmed"
-        $validatorModeReason = "no parameter metadata"
-    }
-    elseif ($validatorParameters.ContainsKey("Mode")) {
-        $validatorArgs.Mode = $Mode
-    }
-    else {
-        $validatorModeCheck = "not declared"
-    }
-}
-catch {
-    $validatorModeCheck = "not confirmed"
-    $validatorModeReason = $_.Exception.GetType().Name
-}
-
-$validationSummary = "PASS"
-if ($Mode -eq "documentation" -and $validatorModeCheck -ne "declared") {
-    $validationSummary = "PASS (validator called without -Mode; documentation-mode rules NOT applied)"
-}
-
-Write-Host ""
-Write-Host "=== Specification Workflow ===" -ForegroundColor Cyan
-Write-Host "Name  : $Name"
-Write-Host "Model : $modelLabel"
-Write-Host "Mode  : $Mode"
-
-$workflowTask = @"
-SPECIFICATION MODE (AUTHORITATIVE):
-$Mode
-
-ORIGINAL USER REQUEST:
-$Task
-"@
-Write-Host ""
-
-if ($Mode -eq "documentation" -and $validatorModeCheck -eq "not declared") {
-    Write-Host "WARNING: Validator '$validator' does not declare a -Mode parameter. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead." -ForegroundColor Yellow
-    Write-Host ""
-}
-elseif ($Mode -eq "documentation" -and $validatorModeCheck -eq "not confirmed") {
-    Write-Host "WARNING: Could not read the parameters of validator '$validator' ($validatorModeReason), so support for -Mode could not be confirmed. It is called without -Mode, so documentation-mode validation rules are NOT applied; the validator's own default rules are used instead." -ForegroundColor Yellow
-    Write-Host ""
-}
-
-# ------------------------------------------------------------
-# Step 1 - Generate specification
-# ------------------------------------------------------------
-
-Write-Host "Step 1 - Generating specification..." -ForegroundColor Yellow
-Write-Host ""
-
-Remove-Item $specFile -Force -ErrorAction SilentlyContinue
-& $runner `
-    -Agent "spec" `
-    -Task $workflowTask `
-    @modelArgs `
-    -OutputFile $specFile
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-    Write-Host "Specification agent failed." -ForegroundColor Red
-    exit 2
-}
-
-
-if (
-    -not (Test-Path $specFile -PathType Leaf) -or
-    (Get-Item $specFile).Length -eq 0
-) {
-    Write-Host ""
-    Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-    Write-Host "Specification file is missing or empty: $specFile" -ForegroundColor Red
-    exit 2
-}
-
-
-# ------------------------------------------------------------
-# Step 2 - Initial structural validation
-# ------------------------------------------------------------
-
-Write-Host ""
-Write-Host "Step 2 - Validating specification structure..." -ForegroundColor Yellow
-Write-Host ""
-
-& $validator -SpecFile $specFile @validatorArgs
-
-if ($LASTEXITCODE -eq 3) {
-    Write-Host ""
-    Write-Host "=== Specification Needs Human Input ===" -ForegroundColor Yellow
-    Write-Host "The task does not contain enough information to specify."
-    Write-Host "See Open Questions in: $specFile"
-    exit 3
-}
-
-if ($LASTEXITCODE -ne 0) {
-    Write-Host ""
-    Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-    Write-Host "Generated specification failed structural validation." -ForegroundColor Red
-    Write-Host "File: $specFile"
-    exit 2
-}
-
-# ------------------------------------------------------------
-# Step 3+ - Review / revision loop
-# ------------------------------------------------------------
-
-$currentSpecFile = $specFile
-
-for ($revision = 0; $revision -le $maxRevisions; $revision++) {
-
-    $reviewIteration = $revision + 1
-
-    if ($revision -eq 0) {
-        $currentReviewFile = $reviewFile
-    }
-    else {
-        $currentReviewFile = Join-Path `
-            $specDirectory `
-            "$Name.revised-v$revision.review.md"
-    }
-
-    Write-Host ""
-    Write-Host "Review iteration $reviewIteration" -ForegroundColor Cyan
-    Write-Host "Specification: $currentSpecFile"
-    Write-Host ""
-
-    # --------------------------------------------------------
-    # Semantic review
-    # --------------------------------------------------------
-
-    Write-Host "Reviewing specification semantics..." -ForegroundColor Yellow
-    Write-Host ""
-
-    Remove-Item $currentReviewFile -Force -ErrorAction SilentlyContinue
-
-    & $reviewer `
-        -Mode $Mode `
-        -Task $Task `
-        -SpecFile $currentSpecFile `
-        @modelArgs `
-        -OutputFile $currentReviewFile
-
-    $reviewExitCode = $LASTEXITCODE
-
-    # Validate reviewer exit code contract.
-
-    if ($reviewExitCode -notin @(0, 1, 2)) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Unexpected reviewer exit code: $reviewExitCode" -ForegroundColor Red
-        exit 2
-    }
-
-    # Exit code 2 is an execution error and is handled below.
-    # PASS/FAIL results must have a non-empty review artifact.
-
-    if ($reviewExitCode -ne 2) {
-        if (
-            -not (Test-Path $currentReviewFile -PathType Leaf) -or
-            (Get-Item $currentReviewFile).Length -eq 0
-        ) {
-            Write-Host ""
-            Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-            Write-Host "Reviewer report is missing or empty: $currentReviewFile" -ForegroundColor Red
-            exit 2
-        }
-    }
-
-
-    if ($reviewExitCode -eq 0) {
-
-        Write-Host ""
-        Write-Host "=== Specification Workflow Complete ===" -ForegroundColor Green
-        Write-Host ""
-        Write-Host "Specification: $currentSpecFile"
-        Write-Host "Validation   : $validationSummary"
-        Write-Host "Review       : PASS"
-        Write-Host "Review File  : $currentReviewFile"
-        Write-Host "Revisions    : $revision"
-        Write-Host ""
-
-        exit 0
-    }
-
-    if ($reviewExitCode -eq 2) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Specification reviewer encountered an execution error." -ForegroundColor Red
-        Write-Host "Specification: $currentSpecFile"
-        Write-Host "Review       : $currentReviewFile"
-        exit 2
-    }
-    # --------------------------------------------------------
-    # Reviewer failed
-    # --------------------------------------------------------
-
-    if ($revision -eq $maxRevisions) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Maximum revision attempts reached ($maxRevisions)." -ForegroundColor Red
-        Write-Host ""
-        Write-Host "Specification: $currentSpecFile"
-        Write-Host "Review       : $currentReviewFile"
-        Write-Host ""
-
-        exit 1
-    }
-
-    # --------------------------------------------------------
-    # Revision
-    # --------------------------------------------------------
-
-    $nextRevision = $revision + 1
-
-    $nextSpecFile = Join-Path `
-        $specDirectory `
-        "$Name.revised-v$nextRevision.md"
-
-    Write-Host ""
-    Write-Host "Semantic review failed." -ForegroundColor Red
-    Write-Host "Starting revision $nextRevision/$maxRevisions..." -ForegroundColor Yellow
-    Write-Host ""
-
-    Remove-Item $nextSpecFile -Force -ErrorAction SilentlyContinue
-    & $reviser `
-        -Mode $Mode `
-        -Task $Task `
-        -SpecFile $currentSpecFile `
-        -ReviewFile $currentReviewFile `
-        @modelArgs `
-        -OutputFile $nextSpecFile
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Specification reviser failed." -ForegroundColor Red
-        Write-Host "Review: $currentReviewFile"
-        exit 2
-    }
-
-    if (
-        -not (Test-Path $nextSpecFile -PathType Leaf) -or
-        (Get-Item $nextSpecFile).Length -eq 0
-    ) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Revised specification is missing or empty." -ForegroundColor Red
-        Write-Host "Expected: $nextSpecFile"
-        exit 2
-    }
-
-    # --------------------------------------------------------
-    # Structural validation of revised specification
-    # --------------------------------------------------------
-
-    Write-Host ""
-    Write-Host "Validating revised specification structure..." -ForegroundColor Yellow
-    Write-Host ""
-
-    & $validator `
-        -SpecFile $nextSpecFile `
-        @validatorArgs
-
-    if ($LASTEXITCODE -ne 0) {
-        Write-Host ""
-        Write-Host "=== Specification Workflow Failed ===" -ForegroundColor Red
-        Write-Host "Revised specification failed structural validation." -ForegroundColor Red
-        Write-Host "File: $nextSpecFile"
-        exit 2
-    }
-
-    $currentSpecFile = $nextSpecFile
-}
-
-exit 1
+exit $workflowResult.legacyExitCode

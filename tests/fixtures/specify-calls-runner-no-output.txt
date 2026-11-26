@@ -1,0 +1,1 @@
+runner|Agent=spec|OutputFile=<OUT>\\demo.md|Task=SPECIFICATION MODE (AUTHORITATIVE):\r\nrequirements\r\n\r\nORIGINAL USER REQUEST:\r\nDeterministic test task

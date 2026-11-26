@@ -178,7 +178,7 @@ param([Parameter(Mandatory = $true)][string]$ScenarioFile)
 
 $ErrorActionPreference = "Stop"
 $global:FakeScenario = [System.IO.File]::ReadAllText($ScenarioFile) | ConvertFrom-Json
-$global:FakeIndex = @{ tags = 0; generate = 0 }
+$global:FakeIndex = @{ tags = 0; generate = 0; version = 0 }
 
 if ($global:FakeScenario.typedExceptions) {
     . $global:FakeScenario.webResponseMock
@@ -241,6 +241,8 @@ function global:Invoke-RestMethod {
     $route = $null
     if ($Uri -ceq "http://127.0.0.1:9/api/tags") { $route = "tags" }
     elseif ($Uri -ceq "http://127.0.0.1:9/api/generate") { $route = "generate" }
+    # Phase 3 B3 (FR-318): the doctor reads the server version.
+    elseif ($Uri -ceq "http://127.0.0.1:9/api/version") { $route = "version" }
     else { throw "Fake Invoke-RestMethod: unknown route: $Uri" }
 
     $section = $global:FakeScenario.$route
@@ -258,6 +260,7 @@ function global:Invoke-RestMethod {
             if ($route -ceq "tags") {
                 return [pscustomobject]@{ models = @($step.models | ForEach-Object { [pscustomobject]@{ name = [string]$_ } }) }
             }
+            if ($route -ceq "version") { return [pscustomobject]@{ version = [string]$step.version } }
             # Phase 3 A4 (RK-305): the answer reports a prompt_eval_count that is about
             # one fifth of the characters sent (a healthy 4 to 5 characters per token),
             # so the new truncation rule (more than 7 characters per token) stays quiet on
@@ -311,7 +314,15 @@ if ($global:FakeScenario.taskFile) {
 
 $exitCode = 0
 try {
-    & $global:FakeScenario.script @arguments
+    # Phase 3 B3: a scenario with argumentList runs a script that parses $args (harness.ps1)
+    # with those strings, in order; every other scenario splats the hashtable as before.
+    if ($null -ne $global:FakeScenario.PSObject.Properties["argumentList"]) {
+        $argumentList = @($global:FakeScenario.argumentList | ForEach-Object { [string]$_ })
+        & $global:FakeScenario.script @argumentList
+    }
+    else {
+        & $global:FakeScenario.script @arguments
+    }
     $exitCode = $LASTEXITCODE
 }
 catch {
@@ -382,7 +393,9 @@ function Invoke-Case {
         [object[]]$GenerateSteps = @(),
         [switch]$RepeatLastGenerate,
         [switch]$TypedExceptions,
-        [string]$RunId = ""
+        [string]$RunId = "",
+        [object[]]$VersionSteps = @(),
+        [string[]]$ArgumentList = @()
     )
 
     [System.IO.File]::WriteAllText($harnessConfig, $ConfigText, $utf8NoBom)
@@ -424,7 +437,9 @@ function Invoke-Case {
         webResponseMock  = (Join-Path $tempRoot "mocks\fake-web-response.ps1")
         tags             = [ordered]@{ repeatLast = $false; steps = @($TagsSteps) }
         generate         = [ordered]@{ repeatLast = [bool]$RepeatLastGenerate; steps = @($GenerateSteps) }
+        version          = [ordered]@{ repeatLast = $false; steps = @($VersionSteps) }
     }
+    if ($PSBoundParameters.ContainsKey("ArgumentList")) { $scenario.argumentList = @($ArgumentList) }
     [System.IO.File]::WriteAllText($scenarioFile, ($scenario | ConvertTo-Json -Depth 8), $utf8NoBom)
 
     # stderr error records are PowerShell text: dropped, never asserted on.

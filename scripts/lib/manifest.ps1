@@ -353,7 +353,7 @@ function Read-HarnessManifest {
 
 # Member lookup by ordinal name on a dictionary or an object. Returns $true and sets
 # $Value, or $false.
-function Get-HarnessMember {
+function Get-HarnessManifestMember {
     param([AllowNull()]$Object, [Parameter(Mandatory = $true)][string]$Name, [ref]$Value)
 
     $Value.Value = $null
@@ -370,7 +370,7 @@ function Get-HarnessMember {
     return $false
 }
 
-function Get-HarnessMemberNames {
+function Get-HarnessManifestMemberNames {
     param([AllowNull()]$Object)
 
     if ($null -eq $Object) { return @() }
@@ -429,7 +429,7 @@ function Test-HarnessSchemaNode {
     param([AllowNull()]$Value, $Schema, [Parameter(Mandatory = $true)][string]$Path, $Errors)
 
     $typeSpec = $null
-    if (Get-HarnessMember -Object $Schema -Name 'type' -Value ([ref]$typeSpec)) {
+    if (Get-HarnessManifestMember -Object $Schema -Name 'type' -Value ([ref]$typeSpec)) {
         $matched = $false
         foreach ($name in @($typeSpec)) {
             if (Test-HarnessJsonType -Value $Value -TypeName ([string]$name)) { $matched = $true; break }
@@ -439,7 +439,7 @@ function Test-HarnessSchemaNode {
     if ($null -eq $Value) { return }
 
     $enumSpec = $null
-    if (Get-HarnessMember -Object $Schema -Name 'enum' -Value ([ref]$enumSpec)) {
+    if (Get-HarnessManifestMember -Object $Schema -Name 'enum' -Value ([ref]$enumSpec)) {
         $found = $false
         foreach ($allowed in @($enumSpec)) {
             if ($null -eq $allowed) { continue }
@@ -458,30 +458,30 @@ function Test-HarnessSchemaNode {
     }
 
     $patternSpec = $null
-    if (($Value -is [string]) -and (Get-HarnessMember -Object $Schema -Name 'pattern' -Value ([ref]$patternSpec))) {
+    if (($Value -is [string]) -and (Get-HarnessManifestMember -Object $Schema -Name 'pattern' -Value ([ref]$patternSpec))) {
         if ($Value -cnotmatch ([string]$patternSpec)) { $Errors.Add("${Path}: pattern_mismatch") }
     }
 
     $minimumSpec = $null
-    if ((Test-HarnessIsNumber -Value $Value) -and (Get-HarnessMember -Object $Schema -Name 'minimum' -Value ([ref]$minimumSpec))) {
+    if ((Test-HarnessIsNumber -Value $Value) -and (Get-HarnessManifestMember -Object $Schema -Name 'minimum' -Value ([ref]$minimumSpec))) {
         if ([decimal]$Value -lt [decimal]$minimumSpec) { $Errors.Add("${Path}: below_minimum") }
     }
 
     if (Test-HarnessIsObject -Value $Value) {
         $requiredSpec = $null
-        if (Get-HarnessMember -Object $Schema -Name 'required' -Value ([ref]$requiredSpec)) {
+        if (Get-HarnessManifestMember -Object $Schema -Name 'required' -Value ([ref]$requiredSpec)) {
             foreach ($name in @($requiredSpec)) {
                 $unused = $null
-                if (-not (Get-HarnessMember -Object $Value -Name ([string]$name) -Value ([ref]$unused))) { $Errors.Add("${Path}.${name}: missing_required") }
+                if (-not (Get-HarnessManifestMember -Object $Value -Name ([string]$name) -Value ([ref]$unused))) { $Errors.Add("${Path}.${name}: missing_required") }
             }
         }
         $propertiesSpec = $null
-        if (Get-HarnessMember -Object $Schema -Name 'properties' -Value ([ref]$propertiesSpec)) {
-            foreach ($name in (Get-HarnessMemberNames -Object $propertiesSpec)) {
+        if (Get-HarnessManifestMember -Object $Schema -Name 'properties' -Value ([ref]$propertiesSpec)) {
+            foreach ($name in (Get-HarnessManifestMemberNames -Object $propertiesSpec)) {
                 $child = $null
-                if (Get-HarnessMember -Object $Value -Name $name -Value ([ref]$child)) {
+                if (Get-HarnessManifestMember -Object $Value -Name $name -Value ([ref]$child)) {
                     $childSchema = $null
-                    [void](Get-HarnessMember -Object $propertiesSpec -Name $name -Value ([ref]$childSchema))
+                    [void](Get-HarnessManifestMember -Object $propertiesSpec -Name $name -Value ([ref]$childSchema))
                     Test-HarnessSchemaNode -Value $child -Schema $childSchema -Path "${Path}.${name}" -Errors $Errors
                 }
             }
@@ -489,7 +489,7 @@ function Test-HarnessSchemaNode {
     }
     elseif (Test-HarnessIsArray -Value $Value) {
         $itemsSpec = $null
-        if (Get-HarnessMember -Object $Schema -Name 'items' -Value ([ref]$itemsSpec)) {
+        if (Get-HarnessManifestMember -Object $Schema -Name 'items' -Value ([ref]$itemsSpec)) {
             $index = 0
             foreach ($item in $Value) {
                 Test-HarnessSchemaNode -Value $item -Schema $itemsSpec -Path "${Path}[${index}]" -Errors $Errors
@@ -503,12 +503,12 @@ function Test-HarnessSchemaNode {
 function Test-HarnessManifestInvariants {
     param($Manifest, $Errors)
 
-    $status = $null; [void](Get-HarnessMember -Object $Manifest -Name 'status' -Value ([ref]$status))
-    $exitCode = $null; [void](Get-HarnessMember -Object $Manifest -Name 'exitCode' -Value ([ref]$exitCode))
-    $endedAt = $null; [void](Get-HarnessMember -Object $Manifest -Name 'endedAtUtc' -Value ([ref]$endedAt))
-    $error_ = $null; [void](Get-HarnessMember -Object $Manifest -Name 'error' -Value ([ref]$error_))
-    $stages = $null; [void](Get-HarnessMember -Object $Manifest -Name 'stages' -Value ([ref]$stages))
-    $artifacts = $null; [void](Get-HarnessMember -Object $Manifest -Name 'artifacts' -Value ([ref]$artifacts))
+    $status = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'status' -Value ([ref]$status))
+    $exitCode = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'exitCode' -Value ([ref]$exitCode))
+    $endedAt = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'endedAtUtc' -Value ([ref]$endedAt))
+    $error_ = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'error' -Value ([ref]$error_))
+    $stages = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'stages' -Value ([ref]$stages))
+    $artifacts = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'artifacts' -Value ([ref]$artifacts))
 
     $terminal = (($status -cne 'queued') -and ($status -cne 'running'))
     if ($terminal) {
@@ -519,7 +519,7 @@ function Test-HarnessManifestInvariants {
         if ($null -ne $exitCode -and [decimal]$exitCode -ne 0) { $Errors.Add('$.exitCode: invariant_succeeded_exit_code') }
         $index = 0
         foreach ($stage in @($stages)) {
-            $stageStatus = $null; [void](Get-HarnessMember -Object $stage -Name 'status' -Value ([ref]$stageStatus))
+            $stageStatus = $null; [void](Get-HarnessManifestMember -Object $stage -Name 'status' -Value ([ref]$stageStatus))
             if ($stageStatus -ceq 'failed') { $Errors.Add("`$.stages[${index}].status: invariant_succeeded_failed_stage") }
             $index++
         }
@@ -529,8 +529,8 @@ function Test-HarnessManifestInvariants {
     $seen = New-Object 'System.Collections.Generic.HashSet[string]' ([System.StringComparer]::Ordinal)
     $index = 0
     foreach ($stage in @($stages)) {
-        $stageId = $null; [void](Get-HarnessMember -Object $stage -Name 'id' -Value ([ref]$stageId))
-        $attempt = $null; [void](Get-HarnessMember -Object $stage -Name 'attempt' -Value ([ref]$attempt))
+        $stageId = $null; [void](Get-HarnessManifestMember -Object $stage -Name 'id' -Value ([ref]$stageId))
+        $attempt = $null; [void](Get-HarnessManifestMember -Object $stage -Name 'attempt' -Value ([ref]$attempt))
         $key = ([string]$stageId) + [char]0 + ([string][decimal]$attempt)
         if (-not $seen.Add($key)) { $Errors.Add("`$.stages[${index}]: invariant_duplicate_stage") }
         $index++
@@ -538,7 +538,7 @@ function Test-HarnessManifestInvariants {
 
     $index = 0
     foreach ($artifact in @($artifacts)) {
-        $artifactPath = $null; [void](Get-HarnessMember -Object $artifact -Name 'path' -Value ([ref]$artifactPath))
+        $artifactPath = $null; [void](Get-HarnessManifestMember -Object $artifact -Name 'path' -Value ([ref]$artifactPath))
         $bad = $false
         if ($artifactPath -is [string]) {
             if ($artifactPath.Length -eq 0) { $bad = $true }
@@ -609,15 +609,15 @@ function Get-HarnessProcessInfo {
 function Get-HarnessRunStatus {
     param([Parameter(Mandatory = $true)]$Manifest)
 
-    $recorded = $null; [void](Get-HarnessMember -Object $Manifest -Name 'status' -Value ([ref]$recorded))
+    $recorded = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'status' -Value ([ref]$recorded))
     $recorded = [string]$recorded
     $derived = $recorded
     $unverified = $false
 
     if ($recorded -ceq 'running') {
-        $processData = $null; [void](Get-HarnessMember -Object $Manifest -Name 'process' -Value ([ref]$processData))
-        $processId = $null; [void](Get-HarnessMember -Object $processData -Name 'pid' -Value ([ref]$processId))
-        $startText = $null; [void](Get-HarnessMember -Object $processData -Name 'processStartUtc' -Value ([ref]$startText))
+        $processData = $null; [void](Get-HarnessManifestMember -Object $Manifest -Name 'process' -Value ([ref]$processData))
+        $processId = $null; [void](Get-HarnessManifestMember -Object $processData -Name 'pid' -Value ([ref]$processId))
+        $startText = $null; [void](Get-HarnessManifestMember -Object $processData -Name 'processStartUtc' -Value ([ref]$startText))
 
         $info = Get-HarnessProcessInfo -ProcessId ([int]$processId)
         if (-not $info.Exists) { $derived = 'abandoned' }

@@ -55,6 +55,15 @@ Always useful: Execution Order L573-596 (needs and order), Affected Files L562-5
 - `.ai/config.json` `schemaVersion` 2: profiles `fast` (qwen3.5:9b, 16384, reserved 4096), `deep`, `review` (reserved 6144); agents `spec`=fast, `spec-reviewer`=review, `spec-reviser`=deep, `developer`=deep; agent files in `.ai\agents\`.
 - The eight legacy scripts and `AI_HARNESS_MODEL`, `AI_HARNESS_RUN_ID` keep their behavior (NFR-304).
 
+## 4b. B1 manifest interfaces (`scripts/lib/manifest.ps1`; throws are `<token>: <text>`)
+
+- `Test-HarnessRunId -Id`; `Get-HarnessRunPath` / `Get-HarnessManifestPath -HarnessRoot -RunId`.
+- `New-HarnessRunClaim -HarnessRoot [-RunId] [-EnvRunId]` -> `{RunId, RunPath, ManifestPath, Source, Warnings[]}`; `invalid_arguments:` for a bad or taken `-RunId` (`$null` = not given); it does not set the env var (B4 does). `Request-HarnessRunClaim` -> bool.
+- `Write-HarnessManifest -Path -Manifest` (atomic; `internal_error:`). `Read-HarnessManifest[Text] -Path` (`manifest_invalid:`).
+- `Test-HarnessManifest -Manifest <object|text> [-SchemaPath]` -> `{valid, errors[]}`. `Get-HarnessRunStatus -Manifest` -> `{recordedStatus, status, livenessUnverified}`.
+- `Read-HarnessTextFile`, `Get-HarnessFileSha256`, `Get-HarnessTextSha256`, `Get-HarnessUtcTimestamp`: never `Get-Content` into a manifest.
+- Schema decisions: FR-304 to FR-306; report `docs/audits/2026-11-26-phase3-b1.md`.
+
 ## 5. Working rules
 
 - Windows PowerShell 5.1, ASCII only; change only the files of Affected Files.

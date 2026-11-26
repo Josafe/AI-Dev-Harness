@@ -97,6 +97,8 @@ The run id is `-RunId`, else a valid `AI_HARNESS_RUN_ID`, else `<UTC yyyyMMddTHH
 
 In a target the harness writes only below `<target>\.ai-harness\`. `runs/` is added to `.gitignore`. `inputs\task.md` (UTF-8, no BOM) is the only place with the task text (O-14).
 
+**Applied in B1 (RECOMMENDATION, not a requirement).** A directory that exists without `.claim` (hand-made, or left by a crash between `CreateDirectory` and `.claim`) is claimed by the first caller: the creator of `.claim` owns the id. The claim function is `Request-HarnessRunClaim`; `New-HarnessRunClaim` applies the id policy above. A final id can have up to 69 characters (a given id of 64 plus `-` plus 4 hex).
+
 ### FR-305 - The run manifest (XR-08)
 
 **Source:** USER
@@ -118,11 +120,15 @@ In a target the harness writes only below `<target>\.ai-harness\`. `runs/` is ad
 
 **Stages.** Ids: `load-check`, `scan`, `context`, `spec-generate`, `spec-validate`, `spec-review`, `spec-revise`, `revised-validate`. `attempt` is the loop's 1-based counter (round k for `spec-review`, revision k for `spec-revise` and `revised-validate`, else 1); `engineAttempts` is the engine's HTTP attempts. A FAIL review is a `succeeded` stage with verdict `FAIL`; next-round stages are appended only after a FAIL. At the end each planned stage not reached is `skipped` with `dependency failed: <id>` or, when none failed (`registry_invalid`, `agent_not_found`, `artifact_exists`), `not reached: <category>`. `error.retryable` is true only when `engineCategory` is `http_5xx` or `transport_reset`; `error.hint` is the engine's fixed hint for `engineCategory`.
 
+**Applied in B1 (RECOMMENDATION, not a requirement).** Required keys in `run-manifest.schema.json`: every top-level key above; every key of `harness`, `target`, `process`, `request` (with `overrides`), `context` (when not null) and of each artifact; for a stage `id`, `kind`, `agent`, `attempt`, `status`, `reason`, `startedAtUtc`, `durationMs`, `exitCode`, `warnings`. The other stage keys are typed but optional, so a pending or skipped stage need not carry telemetry fields. `error` requires only `category` and `message`. Patterns: timestamps `yyyy-MM-ddTHH:mm:ss[.f..]Z` (`Get-HarnessUtcTimestamp` writes `.fff`); `runId` 1 to 69 characters of the FR-304 grammar; `stages[].id` `[a-z][a-z0-9-]*`; `sha256` 64 lowercase hex. A null in a nullable field skips enum, pattern and minimum.
+
 ### FR-306 - Manifest schema and validator
 
 **Source:** USER
 
 `scripts/lib/run-manifest.schema.json` uses a documented subset of JSON Schema: `type` (a name or an array, for nullable fields), `required`, `enum`, `properties`, `items`, `pattern`, `minimum`; unknown properties are allowed; comparisons are ordinal (`-ceq`, `-ccontains`, `-cmatch`). `lib\manifest.ps1` has `Test-HarnessManifest -Manifest <object or JSON text> [-SchemaPath]` returning `{ valid, errors[] }`, errors `<path>: <code>` with the path literal as `$.stages[0].status`; codes `missing_required`, `wrong_type`, `not_in_enum`, `pattern_mismatch`, `below_minimum`, `unsupported_schema_version`, `invariant_*`. Keys, types and enums come from the schema file only. Invariants: a terminal run has `exitCode` 0 to 4 and `endedAtUtc`; `succeeded` has `exitCode` 0 and no failed stage; `failed` and `needs_input` have an `error`; (`id`, `attempt`) is unique; `artifacts[].path` is relative, without `..` or a drive. Every manifest the CLI writes is valid, after any failure too.
+
+**Applied in B1 (RECOMMENDATION, not a requirement).** `error.category` is the FR-308 list (21 names) plus the reserved `cancelled` and `abandoned` (23); `error.engineCategory` is a separate nullable enum with the 12 engine categories (`http_5xx`, `http_4xx`, `timeout`, `transport_unreachable`, `transport_reset`, `transport_other`, `context_budget_exceeded`, `thinking_budget_exhausted`, `empty_response`, `format_invalid`, `model_not_installed`, `model_load_failed`), checked against the hints table of `Get-AgentErrorCategory` and the FR-307 mapping. A missing required key is reported at the path of the missing key; text that is not a JSON object is `$: wrong_type`; a root `schemaVersion` outside its enum is `unsupported_schema_version`; key lookup is ordinal. Invariants run only on a structurally valid manifest, a terminal run is any status but `queued` and `running`, and the codes are `invariant_terminal_exit_code`, `invariant_terminal_ended_at`, `invariant_succeeded_exit_code`, `invariant_succeeded_failed_stage`, `invariant_error_required`, `invariant_duplicate_stage`, `invariant_artifact_path`.
 
 ### FR-307 - Telemetry correlation without a telemetry change
 

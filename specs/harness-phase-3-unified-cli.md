@@ -44,7 +44,7 @@ One entry point, `scripts/harness.ps1`, over the existing scripts. Every workflo
 | `status`, `list`, `stages`, `config`, `doctor` | read-only (FR-309, FR-318) | no |
 | `architecture`, `plan`, `qa`, `code-review`, `develop` | unsupported, exit 4 (FR-308) | yes |
 
-Stages run in the CLI's process with `&`; the only other processes are read-only `git` (`--no-optional-locks`) and, for `doctor`, `nvidia-smi`. An argument error never creates a manifest.
+Stages run in the CLI's process with `&`; the only other processes are read-only `git` (`--no-optional-locks`) and, for `doctor`, `nvidia-smi` and `ollama` (`ollama ps`, FR-318). An argument error never creates a manifest.
 
 ### FR-302 - Parameters: a literal table parsed by the script
 

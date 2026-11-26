@@ -81,6 +81,8 @@ The scripts dot-source `config.ps1`, `telemetry.ps1` and `agent-exec.ps1`, in th
 
 `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` keep their names and parameters. They are defined in `agent-exec.ps1` (no longer in `config.ps1`), delegate to the new functions, and keep their old observable behavior: `Invoke-HarnessGenerate` returns the trimmed text or throws `Ollama request failed: <detail>`; `Test-HarnessModelAvailable` prints the legacy lines and returns the legacy problem string. Both are marked deprecated in a comment. No script calls them after WP-2D.
 
+*Phase 3 note (FR-314):* `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` no longer exist (deleted in commit `0d4a199`), and neither do their nine AC-216 cases or the AC-218 `Write-Host` exemption. This supersedes FR-202, AC-216 and AC-218 for these two functions only.
+
 ### FR-203 — Prompts stay identical to the legacy prompts (golden tests); line endings of the builders' template text are decided in OQ-211
 
 **Source:** USER
@@ -610,8 +612,8 @@ Recorded by the owner's decisions on the final QA (`docs/audits/2026-11-26-phase
 | ID | Item | Where it is handled |
 |---|---|---|
 | DF-201 (QA I-5) | `benchmark-models.ps1` reads `duration_ms` and counts exit 0 as success. A call that was retried now exits 0 with a `duration_ms` that covers the failed attempt and the wait (observed: 1,218 ms with `attempts` 2 against 160 ms with `attempts` 1; with the shipped backoff the wait alone is 5 s), whereas the baseline recorded such a run as an error. **Precondition for WP-2E:** benchmark numbers are not used unless rows with `attempts` above 1 are ignored, or the benchmark runs with `ollama.maxAttempts` 1. No code change in this phase (`benchmark-models.ps1` is not modified). | WP-2E |
-| DF-202 (QA I-6) | Overlapping processes lose telemetry records: 40 writes per process, 2 processes gave 1 to 14 of 80 and 4 processes 6 to 8 of 160 (the baseline writer was equally bad, so this is no regression; the loss is a warning). "Exactly one record per call" (FR-216) holds only without overlap. Fix: a bounded retry on a sharing violation or a named mutex in the writer. | Phase 3 (background runs) |
-| DF-203 (QA section 9) | The deprecated wrappers `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` stay through WP-2E; nothing calls them. Delete them in Phase 3 together with their 8 suite cases and the scan exemption (the `Write-Host` exemption of `Test-HarnessModelAvailable`, AC-218). | Phase 3 |
+| DF-202 (QA I-6) | Overlapping processes lose telemetry records: 40 writes per process, 2 processes gave 1 to 14 of 80 and 4 processes 6 to 8 of 160 (the baseline writer was equally bad, so this is no regression; the loss is a warning). "Exactly one record per call" (FR-216) holds only without overlap. Fix: a bounded retry on a sharing violation or a named mutex in the writer. | Closed: resolved by Phase 3 package A1 (commit `42af7cb`, named mutex, `FileStream` append, locked reader; Phase 3 FR-311). |
+| DF-203 (QA section 9) | The deprecated wrappers `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` stay through WP-2E; nothing calls them. Delete them in Phase 3 together with their 8 suite cases and the scan exemption (the `Write-Host` exemption of `Test-HarnessModelAvailable`, AC-218). | Closed: resolved by Phase 3 package A2 (commit `0d4a199`, wrappers, their cases and the scan exemption deleted; Phase 3 FR-314, AC-322). |
 
 ## Edge Cases
 

@@ -39,6 +39,9 @@
 #   reviewFile      last review path, or $null
 #   revisions       number of revisions started (0 to 3)
 #
+# B5 adds Invoke-ReviewWorkflow and Invoke-ReviseWorkflow at the end of this file (the
+# single-stage workflows of 'harness review' and 'harness revise', same contract).
+#
 # Stage ids (FR-305): spec-generate, spec-validate, spec-review, spec-revise,
 # revised-validate. attempt is 1, except the round k (spec-review) and the
 # revision k (spec-revise, revised-validate).
@@ -748,6 +751,274 @@ $Task
         # Not reachable: the last round always ends above (legacy "exit 1").
         Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "max_revisions_reached" `
             -LegacyExitCode 1 -CliExitCode 1 -Message "Maximum revision attempts reached ($maxRevisions)."
+    }
+    catch {
+        Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "internal_error" -Stage $Result.stage `
+            -LegacyExitCode 2 -CliExitCode 2 -Message "The workflow failed outside a stage." `
+            -ErrorRecord $_ -ErrorSource "workflow"
+    }
+}
+
+# ---------------------------------------------------------------------------
+# The single-stage workflows of 'harness review' and 'harness revise' (Phase 3 B5;
+# FR-319, FR-308, RN-12). Same stage contract, hook and -Result keys as the specify
+# workflow above; the specify workflow itself is not touched.
+# ---------------------------------------------------------------------------
+
+# Review of one specification file: one reviewer call, the stage spec-review with the
+# given attempt (round = revision + 1). Exit 0 is PASS (succeeded, verdict PASS); exit 1 is
+# FAIL: the stage is succeeded with verdict FAIL and the outcome is failed with category
+# review_failed and CLI exit code 1 (RN-12); exit 2, any other code, $null, a throw or a
+# missing or empty review file is stage_failed (exit 2). -ContextFile is passed only when
+# bound (the reviewer accepts it from B7). Never calls exit.
+function Invoke-ReviewWorkflow {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReviewerScript,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$SpecFile,
+        [Parameter(Mandatory = $true)][string]$OutputFile,
+        [int]$Attempt = 1,
+        [string]$Model,
+        [string]$Profile,
+        [string]$ContextFile,
+        [scriptblock]$Hook,
+        [Parameter(Mandatory = $true)][hashtable]$Result
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "internal_error" `
+        -LegacyExitCode 2 -CliExitCode 2 -Message "The workflow did not finish."
+    $Result.specFile = $SpecFile
+    $Result.reviewFile = $OutputFile
+    $Result.revisions = 0
+
+    try {
+        if ($PSBoundParameters.ContainsKey("Model") -and $PSBoundParameters.ContainsKey("Profile")) {
+            $message = "-Model and -Profile cannot be used together."
+            Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "invalid_arguments" `
+                -LegacyExitCode 2 -CliExitCode 2 -Message $message `
+                -ErrorRecord (New-HarnessWorkflowErrorRecord $message) -ErrorSource "workflow"
+            return
+        }
+        if (@("requirements", "baseline", "documentation") -notcontains $Mode) {
+            $message = "Invalid mode: $Mode"
+            Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "invalid_arguments" `
+                -LegacyExitCode 2 -CliExitCode 2 -Message $message `
+                -ErrorRecord (New-HarnessWorkflowErrorRecord $message) -ErrorSource "workflow"
+            return
+        }
+        if (-not (Test-Path $ReviewerScript)) { throw "Specification reviewer not found: $ReviewerScript" }
+
+        $modelArgs = @{}
+        if ($PSBoundParameters.ContainsKey("Model")) { $modelArgs.Model = $Model }
+        if ($PSBoundParameters.ContainsKey("Profile")) { $modelArgs.Profile = $Profile }
+        if ($PSBoundParameters.ContainsKey("ContextFile")) { $modelArgs.ContextFile = $ContextFile }
+
+        Write-Host ""
+        Write-Host "=== Specification Review ===" -ForegroundColor Cyan
+        Write-Host "Specification: $SpecFile"
+        Write-Host "Review file  : $OutputFile"
+        Write-Host ""
+
+        Remove-Item $OutputFile -Force -ErrorAction SilentlyContinue
+        $state = @{}
+        $stageArgs = @{ Mode = $Mode; Task = $Task; SpecFile = $SpecFile }
+        foreach ($key in $modelArgs.Keys) { $stageArgs[$key] = $modelArgs[$key] }
+        $stageArgs.OutputFile = $OutputFile
+        Invoke-HarnessStage -Id "spec-review" -Kind "agent" -Agent "spec-reviewer" -Attempt $Attempt `
+            -Script $ReviewerScript -Arguments $stageArgs -Hook $Hook -State $state
+        if (Test-HarnessStageAborted -State $state -Result $Result -OutputPath $OutputFile -Hook $Hook) { return }
+
+        # RN-8 exception: a reviewer that sets no exit code is unexpected.
+        $reviewExitCode = Get-HarnessStageExitCode $state.exitCode -NullIsUnexpected
+
+        if ($reviewExitCode -notin @(0, 1, 2)) {
+            Write-Host "Unexpected reviewer exit code: $reviewExitCode" -ForegroundColor Red
+            Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                -LegacyExitCode 2 -CliExitCode 2 -OutputPath $OutputFile -Hook $Hook `
+                -Message "Stage 'spec-review' failed with exit code $(Format-HarnessExitCode $reviewExitCode)."
+            return
+        }
+        if ($reviewExitCode -eq 2) {
+            Write-Host "Specification reviewer encountered an execution error." -ForegroundColor Red
+            Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                -LegacyExitCode 2 -CliExitCode 2 -OutputPath $OutputFile -Hook $Hook `
+                -Message "Stage 'spec-review' failed with exit code 2."
+            return
+        }
+        if (-not (Test-HarnessStageOutput $OutputFile)) {
+            Write-Host "Reviewer report is missing or empty: $OutputFile" -ForegroundColor Red
+            Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                -LegacyExitCode 2 -CliExitCode 2 -OutputPath $OutputFile -Hook $Hook `
+                -Message "Stage 'spec-review' failed: exit code $reviewExitCode, output file missing or empty."
+            return
+        }
+
+        if ($reviewExitCode -eq 0) {
+            Write-Host "Review       : PASS" -ForegroundColor Green
+            Complete-HarnessStage -State $state -Status "succeeded" -OutputPath $OutputFile -Verdict "PASS" -Hook $Hook
+            if (Test-HarnessStageAborted -State $state -Result $Result) { return }
+            Set-HarnessWorkflowResult -Result $Result -Outcome "passed" -Stage "spec-review" -LegacyExitCode 0 -CliExitCode 0
+            return
+        }
+
+        # RN-12: a FAIL verdict is exit code 1 with the category review_failed.
+        Write-Host "Review       : FAIL" -ForegroundColor Red
+        Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "review_failed" `
+            -LegacyExitCode 1 -CliExitCode 1 -Status "succeeded" -OutputPath $OutputFile -Verdict "FAIL" -Hook $Hook `
+            -Message "The review verdict is FAIL (see the review file)."
+    }
+    catch {
+        Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "internal_error" -Stage $Result.stage `
+            -LegacyExitCode 2 -CliExitCode 2 -Message "The workflow failed outside a stage." `
+            -ErrorRecord $_ -ErrorSource "workflow"
+    }
+}
+
+# Revision of one specification: one reviser call (stage spec-revise, attempt = the
+# revision number) and the structural validation of its output (stage revised-validate,
+# same attempt; RN-12: revise validates the output of the reviser). Reviser: exit other
+# than 0 or $null, a throw, a missing or empty output is stage_failed (exit 2). Validation:
+# exit 1 or 3 is validation_failed (CLI exit 1); another code or a throw is stage_failed
+# (exit 2). -Mode is passed to a validator that declares it. -ContextFile as in
+# Invoke-ReviewWorkflow. Never calls exit.
+function Invoke-ReviseWorkflow {
+    param(
+        [Parameter(Mandatory = $true)][string]$ReviserScript,
+        [Parameter(Mandatory = $true)][string]$ValidatorScript,
+        [Parameter(Mandatory = $true)][string]$Mode,
+        [Parameter(Mandatory = $true)][string]$Task,
+        [Parameter(Mandatory = $true)][string]$SpecFile,
+        [Parameter(Mandatory = $true)][string]$ReviewFile,
+        [Parameter(Mandatory = $true)][string]$OutputFile,
+        [int]$Attempt = 1,
+        [string]$Model,
+        [string]$Profile,
+        [string]$ContextFile,
+        [scriptblock]$Hook,
+        [Parameter(Mandatory = $true)][hashtable]$Result
+    )
+
+    $ErrorActionPreference = "Stop"
+
+    Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "internal_error" `
+        -LegacyExitCode 2 -CliExitCode 2 -Message "The workflow did not finish."
+    $Result.specFile = $SpecFile
+    $Result.reviewFile = $ReviewFile
+    $Result.revisions = $Attempt
+
+    try {
+        if ($PSBoundParameters.ContainsKey("Model") -and $PSBoundParameters.ContainsKey("Profile")) {
+            $message = "-Model and -Profile cannot be used together."
+            Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "invalid_arguments" `
+                -LegacyExitCode 2 -CliExitCode 2 -Message $message `
+                -ErrorRecord (New-HarnessWorkflowErrorRecord $message) -ErrorSource "workflow"
+            return
+        }
+        if (@("requirements", "baseline", "documentation") -notcontains $Mode) {
+            $message = "Invalid mode: $Mode"
+            Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "invalid_arguments" `
+                -LegacyExitCode 2 -CliExitCode 2 -Message $message `
+                -ErrorRecord (New-HarnessWorkflowErrorRecord $message) -ErrorSource "workflow"
+            return
+        }
+        if (-not (Test-Path $ReviserScript)) { throw "Specification reviser not found: $ReviserScript" }
+        if (-not (Test-Path $ValidatorScript)) { throw "Specification validator not found: $ValidatorScript" }
+
+        $modelArgs = @{}
+        if ($PSBoundParameters.ContainsKey("Model")) { $modelArgs.Model = $Model }
+        if ($PSBoundParameters.ContainsKey("Profile")) { $modelArgs.Profile = $Profile }
+        if ($PSBoundParameters.ContainsKey("ContextFile")) { $modelArgs.ContextFile = $ContextFile }
+
+        # -Mode only to a validator that declares it (FR-008); as in the specify workflow.
+        $validatorArgs = @{}
+        $validatorModeCheck = "declared"
+        $validatorModeReason = ""
+        try {
+            $validatorParameters = (Get-Command -Name $ValidatorScript -CommandType ExternalScript -ErrorAction Stop).Parameters
+            if ($null -eq $validatorParameters) {
+                $validatorModeCheck = "not confirmed"
+                $validatorModeReason = "no parameter metadata"
+            }
+            elseif ($validatorParameters.ContainsKey("Mode")) { $validatorArgs.Mode = $Mode }
+            else { $validatorModeCheck = "not declared" }
+        }
+        catch {
+            $validatorModeCheck = "not confirmed"
+            $validatorModeReason = $_.Exception.GetType().Name
+        }
+
+        Write-Host ""
+        Write-Host "=== Specification Revision ===" -ForegroundColor Cyan
+        Write-Host "Specification: $SpecFile"
+        Write-Host "Review       : $ReviewFile"
+        Write-Host "Revised file : $OutputFile"
+        Write-Host ""
+        if ($Mode -eq "documentation" -and $validatorModeCheck -ne "declared") {
+            Write-Host "WARNING: Validator '$ValidatorScript' does not declare a -Mode parameter or it could not be confirmed ($validatorModeReason). It is called without -Mode, so documentation-mode validation rules are NOT applied." -ForegroundColor Yellow
+            Write-Host ""
+        }
+
+        Remove-Item $OutputFile -Force -ErrorAction SilentlyContinue
+        $state = @{}
+        $stageArgs = @{ Mode = $Mode; Task = $Task; SpecFile = $SpecFile; ReviewFile = $ReviewFile }
+        foreach ($key in $modelArgs.Keys) { $stageArgs[$key] = $modelArgs[$key] }
+        $stageArgs.OutputFile = $OutputFile
+        Invoke-HarnessStage -Id "spec-revise" -Kind "agent" -Agent "spec-reviser" -Attempt $Attempt `
+            -Script $ReviserScript -Arguments $stageArgs -Hook $Hook -State $state
+        if (Test-HarnessStageAborted -State $state -Result $Result -OutputPath $OutputFile -Hook $Hook) { return }
+        $reviserExitCode = Get-HarnessStageExitCode $state.exitCode
+
+        if ($reviserExitCode -ne 0) {
+            Write-Host "Specification reviser failed." -ForegroundColor Red
+            Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                -LegacyExitCode 2 -CliExitCode 2 -OutputPath $OutputFile -Hook $Hook `
+                -Message "Stage 'spec-revise' failed with exit code $(Format-HarnessExitCode $reviserExitCode)."
+            return
+        }
+        if (-not (Test-HarnessStageOutput $OutputFile)) {
+            Write-Host "Revised specification is missing or empty: $OutputFile" -ForegroundColor Red
+            Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                -LegacyExitCode 2 -CliExitCode 2 -OutputPath $OutputFile -Hook $Hook `
+                -Message "Stage 'spec-revise' failed: exit code 0, output file missing or empty."
+            return
+        }
+        Complete-HarnessStage -State $state -Status "succeeded" -OutputPath $OutputFile -Hook $Hook
+        if (Test-HarnessStageAborted -State $state -Result $Result) { return }
+        $Result.specFile = $OutputFile
+
+        Write-Host ""
+        Write-Host "Validating revised specification structure..." -ForegroundColor Yellow
+        Write-Host ""
+        $state = @{}
+        $stageArgs = @{ SpecFile = $OutputFile }
+        foreach ($key in $validatorArgs.Keys) { $stageArgs[$key] = $validatorArgs[$key] }
+        Invoke-HarnessStage -Id "revised-validate" -Kind "deterministic" -Attempt $Attempt `
+            -Script $ValidatorScript -Arguments $stageArgs -Hook $Hook -State $state
+        if (Test-HarnessStageAborted -State $state -Result $Result -Hook $Hook) { return }
+        $validatorExitCode = Get-HarnessStageExitCode $state.exitCode
+
+        if ($validatorExitCode -ne 0) {
+            Write-Host "Revised specification failed structural validation." -ForegroundColor Red
+            Write-Host "File: $OutputFile"
+            if ($validatorExitCode -eq 1 -or $validatorExitCode -eq 3) {
+                Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "validation_failed" `
+                    -LegacyExitCode 2 -CliExitCode 1 -Hook $Hook `
+                    -Message "Stage 'revised-validate' failed structural validation (exit code $validatorExitCode)."
+            }
+            else {
+                Stop-HarnessWorkflowStage -State $state -Result $Result -Outcome "failed" -Category "stage_failed" `
+                    -LegacyExitCode 2 -CliExitCode 2 -Hook $Hook `
+                    -Message "Stage 'revised-validate' failed with exit code $(Format-HarnessExitCode $validatorExitCode)."
+            }
+            return
+        }
+        Write-Host "Revised specification: $OutputFile"
+        Complete-HarnessStage -State $state -Status "succeeded" -Hook $Hook
+        if (Test-HarnessStageAborted -State $state -Result $Result) { return }
+        Set-HarnessWorkflowResult -Result $Result -Outcome "passed" -Stage "revised-validate" -LegacyExitCode 0 -CliExitCode 0
     }
     catch {
         Set-HarnessWorkflowResult -Result $Result -Outcome "failed" -Category "internal_error" -Stage $Result.stage `

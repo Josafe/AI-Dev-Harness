@@ -16,7 +16,9 @@
 #     unsupported stages (exit 4)           B3
 #     specify                               B4 (run layout, manifest checkpoints,
 #                                           telemetry correlation, names, overwrite)
-#     review, revise, scan, context, status, list   stubs until B5, B8
+#     review, revise                        B5 (one agent stage per run; RN-12)
+#     status, list                          B5 (read-only; derived status, FR-309)
+#     scan, context                         stubs until B8
 #
 # HOW A COMMAND IS DISPATCHED (interface for B4 and later)
 #   Invoke-HarnessCli validates the command and its options, then calls
@@ -1381,7 +1383,8 @@ function Invoke-HarnessCliSpecifyEvent {
         }
 
         # FR-305: the next round is planned only after a FAIL review, while revisions remain.
-        if ($id -ceq 'spec-review' -and ([string]$stage.verdict) -ceq 'FAIL' -and [int]$stage.attempt -le $script:HarnessSpecifyMaxRevisions) {
+        # Only the specify workflow has rounds: 'harness review' has one stage (B5, AC-334).
+        if (([string]$Run.Manifest.workflow) -ceq 'specify' -and $id -ceq 'spec-review' -and ([string]$stage.verdict) -ceq 'FAIL' -and [int]$stage.attempt -le $script:HarnessSpecifyMaxRevisions) {
             $revision = [int]$stage.attempt
             foreach ($next in @(
                     @{ Id = 'spec-revise'; Kind = 'agent'; Agent = 'spec-reviser'; Attempt = $revision },
@@ -1600,9 +1603,16 @@ function Invoke-HarnessCliSpecifyRun {
     if ($null -ne $modelOverride) { $workflowArguments.Model = $modelOverride }
     if ($null -ne $profileOverride) { $workflowArguments.Profile = $profileOverride }
     Invoke-SpecifyWorkflow @workflowArguments
+    Complete-HarnessCliWorkflowOutcome -Run $Run -Result $result
+}
 
-    # FR-308 outcome table: the workflow decides the exit code; the category of a failed
-    # runner, reviser or reviewer comes from the stage's telemetry record when it has one.
+# FR-308 outcome table: the workflow decides the exit code; the category of a failed
+# runner, reviser or reviewer comes from the stage's telemetry record when it has one.
+# Shared by specify, review and revise (B5): finishes the run from the workflow's -Result.
+function Complete-HarnessCliWorkflowOutcome {
+    param([Parameter(Mandatory = $true)]$Run, [Parameter(Mandatory = $true)]$Result)
+
+    $result = $Result
     if (([string]$result.outcome) -ceq 'passed') {
         Complete-HarnessCliSpecifyRun -Run $Run -Status 'succeeded' -ExitCode 0 -RunError $null
         return
@@ -1728,8 +1738,377 @@ function Invoke-HarnessCommandSpecify {
 }
 
 # ---------------------------------------------------------------------------
-# Stubs: the commands whose logic belongs to later packages (B5 review, revise, status,
-# list; B8 scan, context). They accept the validated options and do nothing else.
+# Handlers: review and revise (B5; FR-301, FR-308, FR-319, RN-12, AC-334)
+#
+#   One run, one agent stage: 'review' runs spec-review (attempt = revision + 1) on
+#   <Name>.md or <Name>.revised-vN.md and writes its .review.md; 'revise' runs spec-revise
+#   (attempt = revision) on revision N-1 and its review file, writes <Name>.revised-vN.md,
+#   then revised-validate (same attempt). The run layout, claim, protocol, checkpoints,
+#   telemetry join, load of the registry, artifact_exists and -Overwrite (that one file is
+#   moved to runs\<id>\replaced\) are those of specify (B4). A missing input file is an
+#   argument error before any run (Test-HarnessCliInvocation). The artifact lock is B6.
+# ---------------------------------------------------------------------------
+
+# The path review or revise writes (FR-319): the .review.md of the file review reads, or
+# <Name>.revised-vN.md.
+function Get-HarnessCliSpecOutput {
+    param([Parameter(Mandatory = $true)][string]$Command, [Parameter(Mandatory = $true)][string]$SpecDirectory, [Parameter(Mandatory = $true)][string]$Name, [Parameter(Mandatory = $true)][int]$Revision)
+
+    if ($Command -ceq 'revise') { return (Join-Path $SpecDirectory ($Name + '.revised-v' + $Revision + '.md')) }
+    $stem = $Name
+    if ($Revision -gt 0) { $stem = $Name + '.revised-v' + $Revision }
+    return (Join-Path $SpecDirectory ($stem + '.review.md'))
+}
+
+# The run of review or revise after the claim. Fills $Run.ExitCode and $Run.Error.
+function Invoke-HarnessCliSingleRun {
+    param(
+        [Parameter(Mandatory = $true)]$Run,
+        [Parameter(Mandatory = $true)]$Options,
+        [Parameter(Mandatory = $true)]$Context,
+        [Parameter(Mandatory = $true)][string]$Command,
+        [Parameter(Mandatory = $true)][string]$TaskText,
+        [AllowNull()][string]$TaskFile = $null
+    )
+
+    $root = $Run.Root
+    $name = [string]$Options['Name']
+    $revision = [int]$Options['Revision']
+    $inputFiles = @(Get-HarnessCliSpecInputs -Command $Command -TargetPath $Run.TargetPath -Name $name -Revision $revision)
+    $outputFile = Get-HarnessCliSpecOutput -Command $Command -SpecDirectory $Run.SpecDirectory -Name $name -Revision $revision
+    $agent = 'spec-reviewer'
+    if ($Command -ceq 'revise') { $agent = 'spec-reviser' }
+
+    # NFR-305: the task text is written here and nowhere else by the CLI.
+    $inputs = Join-Path $Run.RunPath 'inputs'
+    [void][System.IO.Directory]::CreateDirectory($inputs)
+    $taskPath = Join-Path $inputs 'task.md'
+    [System.IO.File]::WriteAllText($taskPath, $TaskText, (New-Object System.Text.UTF8Encoding($false)))
+
+    $manifest = New-HarnessCliManifest -RunId $Run.RunId -Workflow $Command -HarnessRoot $root -TargetPath $Run.TargetPath -Warnings @($Run.Warnings)
+    $modelOverride = $null
+    $profileOverride = $null
+    if ($Options.Contains('Model')) { $modelOverride = [string]$Options['Model'] }
+    if ($Options.Contains('Profile')) { $profileOverride = [string]$Options['Profile'] }
+    $taskFileValue = $null
+    if (-not [string]::IsNullOrEmpty($TaskFile)) { $taskFileValue = $TaskFile }
+    $manifest.request = [ordered]@{
+        name         = $name
+        mode         = [string]$Options['Mode']
+        maxRevisions = $script:HarnessSpecifyMaxRevisions
+        taskSha256   = (Get-HarnessFileSha256 -Path $taskPath)
+        taskFile     = $taskFileValue
+        include      = @()
+        revision     = $revision
+        overrides    = [ordered]@{ model = $modelOverride; profile = $profileOverride }
+    }
+    $Run.Manifest = $manifest
+    if ($Command -ceq 'review') {
+        $Run.Stages.Add((New-HarnessCliStage -Id 'spec-review' -Kind 'agent' -Agent 'spec-reviewer' -Attempt ($revision + 1)))
+    }
+    else {
+        $Run.Stages.Add((New-HarnessCliStage -Id 'spec-revise' -Kind 'agent' -Agent 'spec-reviser' -Attempt $revision))
+        $Run.Stages.Add((New-HarnessCliStage -Id 'revised-validate' -Kind 'deterministic' -Attempt $revision))
+    }
+    Save-HarnessCliRun -Run $Run
+
+    # Checked before the stage (FR-308): the registry and the resolution of the agent of
+    # the command (an unknown -Profile included), then its agent file.
+    try {
+        $registry = Get-HarnessCliRegistry -HarnessRoot $root
+        $resolveArguments = @{ Agent = $agent; Registry = $registry }
+        if ($null -ne $modelOverride) { $resolveArguments.Model = $modelOverride }
+        if ($null -ne $profileOverride) { $resolveArguments.Profile = $profileOverride }
+        [void](Resolve-HarnessExecution @resolveArguments)
+    }
+    catch {
+        Stop-HarnessCliSpecifyRun -Run $Run -Category 'registry_invalid' -Message (Get-HarnessCliTokenText -Message ([string]$_.Exception.Message) -Token 'registry_invalid')
+        return
+    }
+    $agentFile = Join-Path (Join-Path (Join-Path $root '.ai') 'agents') ($agent + '.md')
+    if (-not [System.IO.File]::Exists($agentFile)) {
+        Stop-HarnessCliSpecifyRun -Run $Run -Category 'agent_not_found' -Message ("The agent file .ai\agents\" + $agent + ".md does not exist.")
+        return
+    }
+
+    # FR-319: an existing output is refused, or with -Overwrite that file alone is moved
+    # to runs\<id>\replaced\.
+    if ([System.IO.File]::Exists($outputFile)) {
+        $leaf = [System.IO.Path]::GetFileName($outputFile)
+        if (-not $Options.Contains('Overwrite')) {
+            Stop-HarnessCliSpecifyRun -Run $Run -Category 'artifact_exists' -Message ("The output file '" + $leaf + "' already exists in <target>\.ai-harness\specs; use -Overwrite to replace it.")
+            return
+        }
+        foreach ($moved in @(Move-HarnessCliSpecFamily -Files @($outputFile) -Destination (Join-Path $Run.RunPath 'replaced'))) {
+            $Run.Replaced.Add([ordered]@{ role = 'replaced'; root = 'run'; path = ('replaced\' + $moved.name); sha256 = [string]$moved.sha256; trust = 'untrusted-draft' })
+        }
+        Save-HarnessCliRun -Run $Run
+    }
+
+    # The workflow (workflow.ps1) with the checkpoint hook; the hook finds the run through
+    # the call stack ($harnessSpecifyRun of the handler, dynamic scope).
+    $hook = { param($EventName, $Data) Invoke-HarnessCliSpecifyEvent -Run $harnessSpecifyRun -EventName $EventName -Data $Data }
+    $scripts = $Context.StageScripts
+    $result = @{}
+    if ($Command -ceq 'review') {
+        $workflowArguments = @{
+            ReviewerScript = [string]$scripts['reviewer']
+            Mode           = [string]$Options['Mode']
+            Task           = $TaskText
+            SpecFile       = [string]$inputFiles[0]
+            OutputFile     = $outputFile
+            Attempt        = ($revision + 1)
+            Hook           = $hook
+            Result         = $result
+        }
+        if ($null -ne $modelOverride) { $workflowArguments.Model = $modelOverride }
+        if ($null -ne $profileOverride) { $workflowArguments.Profile = $profileOverride }
+        Invoke-ReviewWorkflow @workflowArguments
+    }
+    else {
+        $workflowArguments = @{
+            ReviserScript   = [string]$scripts['reviser']
+            ValidatorScript = [string]$scripts['validator']
+            Mode            = [string]$Options['Mode']
+            Task            = $TaskText
+            SpecFile        = [string]$inputFiles[0]
+            ReviewFile      = [string]$inputFiles[1]
+            OutputFile      = $outputFile
+            Attempt         = $revision
+            Hook            = $hook
+            Result          = $result
+        }
+        if ($null -ne $modelOverride) { $workflowArguments.Model = $modelOverride }
+        if ($null -ne $profileOverride) { $workflowArguments.Profile = $profileOverride }
+        Invoke-ReviseWorkflow @workflowArguments
+    }
+    Complete-HarnessCliWorkflowOutcome -Run $Run -Result $result
+}
+
+# The handler of review and revise: the protocol of specify (RUN_ID first, ERROR then
+# MANIFEST last, AI_HARNESS_RUN_ID set and restored) around Invoke-HarnessCliSingleRun.
+function Invoke-HarnessCliSingleCommand {
+    param($Command, $Options, $Context)
+
+    $root = [string]$Context.HarnessRoot
+    $targetPath = [string]$Options['TargetPath']
+
+    # Before the claim: one ERROR line, exit 2, nothing written (FR-308).
+    $unsafe = Test-HarnessCliArtifactDirectory -TargetPath $targetPath
+    if ($null -ne $unsafe) {
+        Write-HarnessCliError -Token 'invalid_arguments' -Text $unsafe
+        $Context.ExitCode = 2
+        return
+    }
+    $taskFile = $null
+    $taskText = $null
+    if ($Options.Contains('TaskFile')) {
+        $taskFile = [string]$Options['TaskFile']
+        try { $taskText = Read-HarnessTextFile -Path $taskFile }
+        catch { Write-HarnessCliError -Token 'invalid_arguments' -Text '-TaskFile cannot be read.'; $Context.ExitCode = 2; return }
+        if ([string]::IsNullOrWhiteSpace($taskText)) { Write-HarnessCliError -Token 'invalid_arguments' -Text '-TaskFile is empty.'; $Context.ExitCode = 2; return }
+    }
+    else { $taskText = [string]$Options['Task'] }
+
+    $runIdArgument = $null
+    if ($Options.Contains('RunId')) { $runIdArgument = [string]$Options['RunId'] }
+    $previousRunId = $env:AI_HARNESS_RUN_ID
+    $claim = $null
+    try { $claim = New-HarnessRunClaim -HarnessRoot $root -RunId $runIdArgument -EnvRunId $previousRunId }
+    catch {
+        $message = [string]$_.Exception.Message
+        if ($message.StartsWith('invalid_arguments:', [System.StringComparison]::Ordinal)) { Write-HarnessCliError -Token 'invalid_arguments' -Text (Get-HarnessCliTokenText -Message $message -Token 'invalid_arguments') }
+        else { Write-HarnessCliError -Token 'internal_error' -Text (Get-HarnessCliTokenText -Message $message -Token 'internal_error') }
+        $Context.ExitCode = 2
+        return
+    }
+    Write-Output ('RUN_ID: ' + $claim.RunId)
+
+    # The same variable name as the specify handler: the workflow hook reads it through
+    # the call stack.
+    $harnessSpecifyRun = @{
+        Root             = $root
+        RunId            = [string]$claim.RunId
+        RunPath          = [string]$claim.RunPath
+        ManifestPath     = [string]$claim.ManifestPath
+        TargetPath       = $targetPath
+        SpecDirectory    = (Get-HarnessCliSpecDirectory -TargetPath $targetPath)
+        Warnings         = @($claim.Warnings)
+        Manifest         = $null
+        Stages           = (New-Object 'System.Collections.Generic.List[object]')
+        Replaced         = (New-Object 'System.Collections.Generic.List[object]')
+        Current          = $null
+        CurrentTelemetry = $null
+        Clock            = $null
+        ExternalHook     = $Context.Hook
+        ExitCode         = 2
+        Error            = $null
+    }
+    try {
+        # FR-304: the stages see the run id; telemetry run_id equals the manifest runId.
+        $env:AI_HARNESS_RUN_ID = $claim.RunId
+        Invoke-HarnessCliSingleRun -Run $harnessSpecifyRun -Options $Options -Context $Context -Command $Command -TaskText $taskText -TaskFile $taskFile
+    }
+    catch {
+        $internal = New-HarnessCliError -Category 'internal_error' -Message ([string]$_.Exception.Message)
+        $harnessSpecifyRun.ExitCode = 2
+        $harnessSpecifyRun.Error = $internal
+        if ($null -ne $harnessSpecifyRun.Manifest) {
+            try { Complete-HarnessCliSpecifyRun -Run $harnessSpecifyRun -Status 'failed' -ExitCode 2 -RunError $internal }
+            catch { $harnessSpecifyRun.Error = New-HarnessCliError -Category 'internal_error' -Message ([string]$_.Exception.Message) }
+        }
+    }
+    finally {
+        $env:AI_HARNESS_RUN_ID = $previousRunId
+    }
+
+    if ($harnessSpecifyRun.ExitCode -ne 0) {
+        $category = 'internal_error'
+        $text = 'The run failed.'
+        if ($null -ne $harnessSpecifyRun.Error) { $category = [string]$harnessSpecifyRun.Error.category; $text = [string]$harnessSpecifyRun.Error.message }
+        Write-HarnessCliError -Token $category -Text $text
+    }
+    Write-Output ('MANIFEST: ' + $claim.ManifestPath)
+    $Context.ExitCode = [int]$harnessSpecifyRun.ExitCode
+}
+
+function Invoke-HarnessCommandReview {
+    param($Command, $Options, $Context)
+    Invoke-HarnessCliSingleCommand -Command $Command -Options $Options -Context $Context
+}
+
+function Invoke-HarnessCommandRevise {
+    param($Command, $Options, $Context)
+    Invoke-HarnessCliSingleCommand -Command $Command -Options $Options -Context $Context
+}
+
+# ---------------------------------------------------------------------------
+# Handlers: status and list (B5; FR-309, AC-315). Read-only: nothing is created, moved or
+# written; manifests are read with the FR-305 retries (Read-HarnessManifestText).
+# ---------------------------------------------------------------------------
+
+# One run manifest, read and validated. Result { ok, manifest, message }; never throws.
+function Read-HarnessCliRunManifest {
+    param([Parameter(Mandatory = $true)][string]$ManifestPath)
+
+    if (-not [System.IO.File]::Exists($ManifestPath)) {
+        return [pscustomobject]@{ ok = $false; manifest = $null; message = 'manifest.json does not exist.' }
+    }
+    try {
+        $text = Read-HarnessManifestText -Path $ManifestPath
+        $check = Test-HarnessManifest -Manifest $text
+        if (-not $check.valid) {
+            return [pscustomobject]@{ ok = $false; manifest = $null; message = ('the manifest is not valid: ' + ((@($check.errors) | Select-Object -First 3) -join '; ')) }
+        }
+        $manifest = ConvertFrom-Json -InputObject $text -ErrorAction Stop
+        return [pscustomobject]@{ ok = $true; manifest = $manifest; message = $null }
+    }
+    catch {
+        return [pscustomobject]@{ ok = $false; manifest = $null; message = (Get-HarnessCliTokenText -Message ([string]$_.Exception.Message) -Token 'manifest_invalid') }
+    }
+}
+
+function Invoke-HarnessCommandStatus {
+    param($Command, $Options, $Context)
+
+    $root = [string]$Context.HarnessRoot
+    $runId = [string]$Options['RunId']
+    $runPath = Get-HarnessRunPath -HarnessRoot $root -RunId $runId
+    if (-not [System.IO.Directory]::Exists($runPath)) {
+        Write-HarnessCliError -Token 'invalid_arguments' -Text ("no run '" + (Format-HarnessIdForMessage -Id $runId) + "' exists.")
+        $Context.ExitCode = 2
+        return
+    }
+    $manifestPath = Join-Path $runPath 'manifest.json'
+    $read = Read-HarnessCliRunManifest -ManifestPath $manifestPath
+    if (-not $read.ok) {
+        Write-HarnessCliError -Token 'manifest_invalid' -Text $read.message
+        $Context.ExitCode = 2
+        return
+    }
+    $manifest = $read.manifest
+    $derived = Get-HarnessRunStatus -Manifest $manifest
+
+    $stages = @($manifest.stages | ForEach-Object { [ordered]@{ id = [string]$_.id; attempt = $_.attempt; status = [string]$_.status } })
+    if ($Options.Contains('Json')) {
+        Write-Output (ConvertTo-HarnessCliJson -Value ([ordered]@{
+                    runId          = [string]$manifest.runId
+                    workflow       = [string]$manifest.workflow
+                    recordedStatus = $derived.recordedStatus
+                    status         = $derived.status
+                    exitCode       = $manifest.exitCode
+                    stages         = $stages
+                    warnings       = @($manifest.warnings)
+                    error          = $manifest.error
+                    manifestPath   = $manifestPath
+                }))
+    }
+    else {
+        Write-Output ('runId: ' + [string]$manifest.runId)
+        Write-Output ('workflow: ' + [string]$manifest.workflow)
+        Write-Output ('recordedStatus: ' + $derived.recordedStatus)
+        Write-Output ('status: ' + $derived.status)
+        $exitText = '-'
+        if ($null -ne $manifest.exitCode) { $exitText = [string]$manifest.exitCode }
+        Write-Output ('exitCode: ' + $exitText)
+        foreach ($stage in $stages) { Write-Output ('stage: ' + $stage.id + ' (attempt ' + [string]$stage.attempt + '): ' + $stage.status) }
+        foreach ($warning in @($manifest.warnings)) { Write-Output ('warning: ' + (Format-HarnessCliText -Text ([string]$warning))) }
+        if ($null -ne $manifest.error) { Write-Output ('error: ' + (Format-HarnessCliText -Text ([string]$manifest.error.category)) + ': ' + (Format-HarnessCliText -Text ([string]$manifest.error.message))) }
+        Write-Output ('manifest: ' + $manifestPath)
+    }
+    $Context.ExitCode = 0
+}
+
+function Invoke-HarnessCommandList {
+    param($Command, $Options, $Context)
+
+    $root = [string]$Context.HarnessRoot
+    $runsDirectory = Join-Path $root 'runs'
+    $entries = New-Object 'System.Collections.Generic.List[object]'
+    if ([System.IO.Directory]::Exists($runsDirectory)) {
+        $styles = [System.Globalization.DateTimeStyles]([System.Globalization.DateTimeStyles]::AdjustToUniversal -bor [System.Globalization.DateTimeStyles]::AssumeUniversal)
+        foreach ($directory in [System.IO.Directory]::GetDirectories($runsDirectory)) {
+            $leaf = [System.IO.Path]::GetFileName($directory)
+            $read = Read-HarnessCliRunManifest -ManifestPath (Join-Path $directory 'manifest.json')
+            $entry = $null
+            if ($read.ok) {
+                $manifest = $read.manifest
+                $derived = Get-HarnessRunStatus -Manifest $manifest
+                $key = [datetime]::MinValue
+                if (-not [datetime]::TryParse([string]$manifest.createdAtUtc, [System.Globalization.CultureInfo]::InvariantCulture, $styles, [ref]$key)) {
+                    $key = [System.IO.Directory]::GetCreationTimeUtc($directory)
+                }
+                $entry = [pscustomobject]@{ key = $key; runId = $leaf; workflow = [string]$manifest.workflow; status = $derived.status; exitCode = $manifest.exitCode; createdAtUtc = [string]$manifest.createdAtUtc; name = $manifest.request.name }
+            }
+            else {
+                $entry = [pscustomobject]@{ key = [System.IO.Directory]::GetCreationTimeUtc($directory); runId = $leaf; workflow = $null; status = 'unreadable'; exitCode = $null; createdAtUtc = $null; name = $null }
+            }
+            $entries.Add($entry)
+        }
+    }
+    # Newest first; equal times by run id, descending.
+    $sorted = @($entries.ToArray() | Sort-Object -Property @{ Expression = { $_.key }; Descending = $true }, @{ Expression = { $_.runId }; Descending = $true })
+    if ($Options.Contains('Last')) { $sorted = @($sorted | Select-Object -First ([int]$Options['Last'])) }
+    $runs = @($sorted | ForEach-Object { [ordered]@{ runId = $_.runId; workflow = $_.workflow; status = $_.status; exitCode = $_.exitCode; createdAtUtc = $_.createdAtUtc; name = $_.name } })
+
+    if ($Options.Contains('Json')) { Write-Output (ConvertTo-HarnessCliJson -Value ([ordered]@{ runs = $runs })) }
+    else {
+        foreach ($run in $runs) {
+            $workflowText = '-'
+            if ($null -ne $run.workflow) { $workflowText = $run.workflow }
+            $exitText = '-'
+            if ($null -ne $run.exitCode) { $exitText = [string]$run.exitCode }
+            $createdText = '-'
+            if ($null -ne $run.createdAtUtc) { $createdText = $run.createdAtUtc }
+            Write-Output ('{0,-32} {1,-11} {2,-9} exit {3,-2} {4}' -f (Format-HarnessCliText -Text $run.runId), $run.status, $workflowText, $exitText, $createdText)
+        }
+    }
+    $Context.ExitCode = 0
+}
+
+# ---------------------------------------------------------------------------
+# Stubs: the commands whose logic belongs to later packages (B8 scan, context). They accept
+# the validated options and do nothing else.
 # ---------------------------------------------------------------------------
 
 function Write-HarnessCliNotImplemented {
@@ -1739,12 +2118,8 @@ function Write-HarnessCliNotImplemented {
     $Context.ExitCode = 2
 }
 
-function Invoke-HarnessCommandReview { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
-function Invoke-HarnessCommandRevise { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 function Invoke-HarnessCommandScan { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 function Invoke-HarnessCommandContext { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
-function Invoke-HarnessCommandStatus { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
-function Invoke-HarnessCommandList { param($Command, $Options, $Context) Write-HarnessCliNotImplemented -Command $Command -Context $Context }
 
 # ---------------------------------------------------------------------------
 # The entry point

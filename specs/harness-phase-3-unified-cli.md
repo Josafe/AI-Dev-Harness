@@ -194,7 +194,7 @@ The CLI is a short-lived foreground process built to be killed at any moment: th
 
 **Source:** USER
 
-It becomes `test-engine-callsites-run-agent.ps1`, `-review-spec.ps1` and `-revise-spec.ps1` over one helper `tests\lib\engine-fake-host.ps1` (fake host, `New-TempHarness`, `Invoke-Case`, the four guards, assertion helpers; not named `test-*`). No case body, assertion or expected value is edited; only file and order change, and a loop that builds cases for several scripts may have its script list cut to one (the case at line 2013, which tests two scripts, goes with its first). Case names are built at run time (85 `Test-Case` sites), so the reference is the name list printed by a run of the old suite. FR-314 comes first, as its own commit. Each suite follows the `test-all.ps1` contract and runs the four guards.
+It becomes `test-engine-callsites-run-agent.ps1`, `-review-spec.ps1` and `-revise-spec.ps1` over one helper `tests\lib\engine-fake-host.ps1` (fake host, `New-TempHarness`, `Invoke-Case`, the four guards, assertion helpers; not named `test-*`). No case body, assertion or expected value is edited; only file and order change, and a loop that builds cases for several scripts may have its script list cut to one (the case at line 2013, which tests two scripts, goes with its first). One exception, decided by the owner at A3: that case keeps its name and assertions, stays in the review suite only, and its loop runs both scripts there, so no coverage is lost. Case names are built at run time (85 `Test-Case` sites), so the reference is the name list printed by a run of the old suite. FR-314 comes first, as its own commit. Each suite follows the `test-all.ps1` contract and runs the four guards.
 
 ### FR-316 - A prompt-truncation signal that works, and is printed (WP-2E s5, s13.5)
 
@@ -439,7 +439,7 @@ The syntax tree of `lib\agent-exec.ps1` defines neither wrapper; after dot-sourc
 
 Verifies: FR-315.
 
-`test-engine-callsites.ps1` is gone; the three suites and the helper exist; `test-all.ps1` discovers the three and not the helper; each parses, has no mandatory parameter, ends with `exit`, passes with the four guards and runs under 300 s. The union of their case names equals `tests\fixtures\engine-callsites-cases.txt`, the names printed by a run of the old suite at the commit before the split (minus the nine wrapper cases when FR-314 is done first), and the counts add up.
+`test-engine-callsites.ps1` is gone; the three suites and the helper exist; `test-all.ps1` discovers the three and not the helper; each parses, has no mandatory parameter, ends with `exit`, passes with the four guards and runs under 300 s. The union of their case names equals `tests\fixtures\engine-callsites-cases.txt`, the names printed by a run of the old suite at the commit before the split (minus the nine wrapper cases when FR-314 is done first), and the counts add up (the guard proofs are printed once per suite; a case that tests two scripts is printed once, by the suite of its first).
 
 ### AC-324 - Full offline regression and determinism
 

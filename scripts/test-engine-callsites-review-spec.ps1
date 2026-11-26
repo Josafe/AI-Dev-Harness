@@ -28,6 +28,7 @@ try {
     Initialize-EngineSuite
 
     # FR-315: the loops below build cases for both scripts; this suite keeps one.
+    $allSubjects = $subjects
     $subjects = @($subjects | Where-Object { $_.Key -ceq "review" })
 
     Write-Host ""
@@ -631,7 +632,7 @@ try {
     }
 
     Test-Case "AC-216 review-spec and revise-spec reject a -Mode outside the ValidateSet before any request or record" {
-        foreach ($subject in $subjects) {
+        foreach ($subject in $allSubjects) {
             $run = Invoke-Case -Name "$($subject.Key)-bad-mode" -ConfigText (New-V2Config) -Script $subject.Script -Arguments @{ Mode = "everything" } -TagsSteps $tagsAlpha
             Assert-Guards $run
             Assert-True "a non-zero exit code" ($run.ExitCode -ne 0)

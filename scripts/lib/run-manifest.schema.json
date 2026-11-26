@@ -1,0 +1,175 @@
+{
+  "$comment": "Run manifest schema, version 1 (Phase 3, FR-305, FR-306). Read by Test-HarnessManifest in lib/manifest.ps1; keys, types and enums come from this file only. Subset of JSON Schema: type (a name or an array of names; names: object, array, string, integer, boolean, null), required, enum, properties, items, pattern, minimum. Unknown properties are allowed. Comparisons are ordinal (-ceq, -ccontains, -cmatch). A null value whose type allows null is valid and the other keywords are not applied to it. The root schemaVersion failing its enum is reported as unsupported_schema_version. Cross-field rules (invariant_*) live in the validator, not here.",
+  "type": "object",
+  "required": ["schemaVersion", "runId", "workflow", "status", "exitCode", "createdAtUtc", "startedAtUtc", "endedAtUtc", "warnings", "error", "harness", "target", "process", "request", "context", "stages", "artifacts", "verification"],
+  "properties": {
+    "schemaVersion": { "type": "integer", "enum": [1] },
+    "runId": { "type": "string", "pattern": "\\A[A-Za-z0-9](?:[A-Za-z0-9_-]|\\.(?!\\z)){0,68}\\z" },
+    "workflow": { "type": "string" },
+    "status": { "type": "string", "enum": ["queued", "running", "succeeded", "failed", "needs_input", "cancelled", "abandoned"] },
+    "exitCode": { "type": ["integer", "null"], "minimum": 0 },
+    "createdAtUtc": { "type": "string", "pattern": "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,7})?Z\\z" },
+    "startedAtUtc": { "type": ["string", "null"], "pattern": "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,7})?Z\\z" },
+    "endedAtUtc": { "type": ["string", "null"], "pattern": "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,7})?Z\\z" },
+    "warnings": { "type": "array", "items": { "type": "string" } },
+    "error": {
+      "type": ["object", "null"],
+      "required": ["category", "message"],
+      "properties": {
+        "category": { "type": "string", "enum": ["invalid_arguments", "registry_invalid", "agent_not_found", "ollama_unreachable", "model_not_installed", "model_load_failed", "context_budget_exceeded", "context_invalid", "timeout", "http_error", "empty_output", "invalid_output_format", "validation_failed", "review_failed", "max_revisions_reached", "needs_human_input", "unsupported_stage", "artifact_exists", "artifact_in_use", "stage_failed", "internal_error", "cancelled", "abandoned"] },
+        "engineCategory": { "type": ["string", "null"], "enum": ["http_5xx", "http_4xx", "timeout", "transport_unreachable", "transport_reset", "transport_other", "context_budget_exceeded", "thinking_budget_exhausted", "empty_response", "format_invalid", "model_not_installed", "model_load_failed"] },
+        "message": { "type": "string" },
+        "hint": { "type": ["string", "null"] },
+        "retryable": { "type": ["boolean", "null"] },
+        "httpStatus": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "harness": {
+      "type": "object",
+      "required": ["root", "gitCommit", "gitDirty", "registrySchemaVersion", "registrySha256", "ollamaUrl"],
+      "properties": {
+        "root": { "type": "string" },
+        "gitCommit": { "type": ["string", "null"] },
+        "gitDirty": { "type": ["boolean", "null"] },
+        "registrySchemaVersion": { "type": ["integer", "null"], "minimum": 0 },
+        "registrySha256": { "type": ["string", "null"], "pattern": "\\A[0-9a-f]{64}\\z" },
+        "ollamaUrl": { "type": ["string", "null"] }
+      }
+    },
+    "target": {
+      "type": "object",
+      "required": ["root", "artifactDir"],
+      "properties": {
+        "root": { "type": ["string", "null"] },
+        "artifactDir": { "type": ["string", "null"] }
+      }
+    },
+    "process": {
+      "type": "object",
+      "required": ["pid", "processStartUtc", "background"],
+      "properties": {
+        "pid": { "type": "integer", "minimum": 0 },
+        "processStartUtc": { "type": ["string", "null"], "pattern": "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,7})?Z\\z" },
+        "background": { "type": "boolean" }
+      }
+    },
+    "request": {
+      "type": "object",
+      "required": ["name", "mode", "maxRevisions", "taskSha256", "taskFile", "include", "revision", "overrides"],
+      "properties": {
+        "name": { "type": ["string", "null"] },
+        "mode": { "type": ["string", "null"] },
+        "maxRevisions": { "type": ["integer", "null"], "minimum": 0 },
+        "taskSha256": { "type": ["string", "null"], "pattern": "\\A[0-9a-f]{64}\\z" },
+        "taskFile": { "type": ["string", "null"] },
+        "include": { "type": "array", "items": { "type": "string" } },
+        "revision": { "type": ["integer", "null"], "minimum": 0 },
+        "overrides": {
+          "type": "object",
+          "required": ["model", "profile"],
+          "properties": {
+            "model": { "type": ["string", "null"] },
+            "profile": { "type": ["string", "null"] }
+          }
+        }
+      }
+    },
+    "context": {
+      "type": ["object", "null"],
+      "required": ["file", "sha256", "chars", "files"],
+      "properties": {
+        "file": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "\\A[0-9a-f]{64}\\z" },
+        "chars": { "type": ["integer", "null"], "minimum": 0 },
+        "files": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "required": ["path", "sha256", "sizeBytes"],
+            "properties": {
+              "path": { "type": "string" },
+              "sha256": { "type": "string", "pattern": "\\A[0-9a-f]{64}\\z" },
+              "sizeBytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "stages": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "kind", "agent", "attempt", "status", "reason", "startedAtUtc", "durationMs", "exitCode", "warnings"],
+        "properties": {
+          "id": { "type": "string", "pattern": "\\A[a-z][a-z0-9-]{0,63}\\z" },
+          "kind": { "type": "string", "enum": ["agent", "deterministic", "unsupported"] },
+          "agent": { "type": ["string", "null"] },
+          "attempt": { "type": "integer", "minimum": 1 },
+          "status": { "type": "string", "enum": ["pending", "running", "succeeded", "failed", "skipped", "unsupported", "cancelled"] },
+          "reason": { "type": ["string", "null"] },
+          "startedAtUtc": { "type": ["string", "null"], "pattern": "\\A[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(?:\\.[0-9]{1,7})?Z\\z" },
+          "durationMs": { "type": ["integer", "null"], "minimum": 0 },
+          "exitCode": { "type": ["integer", "null"] },
+          "resolution": {
+            "type": ["object", "null"],
+            "properties": {
+              "profile": { "type": ["string", "null"] },
+              "model": { "type": ["string", "null"] },
+              "modelSource": { "type": ["string", "null"] },
+              "timeoutSec": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          },
+          "budget": {
+            "type": ["object", "null"],
+            "properties": {
+              "contextWindow": { "type": ["integer", "null"], "minimum": 0 },
+              "estimatedPromptTokens": { "type": ["integer", "null"], "minimum": 0 },
+              "withinBudget": { "type": ["boolean", "null"] }
+            }
+          },
+          "callId": { "type": ["string", "null"] },
+          "engineAttempts": { "type": ["integer", "null"], "minimum": 0 },
+          "callDurationMs": { "type": ["integer", "null"], "minimum": 0 },
+          "warnings": { "type": "array", "items": { "type": "string" } },
+          "contextSha256": { "type": ["string", "null"], "pattern": "\\A[0-9a-f]{64}\\z" },
+          "verdict": { "type": ["string", "null"], "enum": ["PASS", "FAIL"] },
+          "output": {
+            "type": ["object", "null"],
+            "required": ["path", "sha256"],
+            "properties": {
+              "path": { "type": "string" },
+              "sha256": { "type": ["string", "null"], "pattern": "\\A[0-9a-f]{64}\\z" }
+            }
+          },
+          "error": {
+            "type": ["object", "null"],
+            "required": ["category", "message"],
+            "properties": {
+              "category": { "type": "string", "enum": ["invalid_arguments", "registry_invalid", "agent_not_found", "ollama_unreachable", "model_not_installed", "model_load_failed", "context_budget_exceeded", "context_invalid", "timeout", "http_error", "empty_output", "invalid_output_format", "validation_failed", "review_failed", "max_revisions_reached", "needs_human_input", "unsupported_stage", "artifact_exists", "artifact_in_use", "stage_failed", "internal_error", "cancelled", "abandoned"] },
+              "engineCategory": { "type": ["string", "null"], "enum": ["http_5xx", "http_4xx", "timeout", "transport_unreachable", "transport_reset", "transport_other", "context_budget_exceeded", "thinking_budget_exhausted", "empty_response", "format_invalid", "model_not_installed", "model_load_failed"] },
+              "message": { "type": "string" },
+              "hint": { "type": ["string", "null"] },
+              "retryable": { "type": ["boolean", "null"] },
+              "httpStatus": { "type": ["integer", "null"], "minimum": 0 }
+            }
+          }
+        }
+      }
+    },
+    "artifacts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["role", "root", "path", "sha256", "trust"],
+        "properties": {
+          "role": { "type": "string" },
+          "root": { "type": "string", "enum": ["target", "run"] },
+          "path": { "type": "string" },
+          "sha256": { "type": "string", "pattern": "\\A[0-9a-f]{64}\\z" },
+          "trust": { "type": "string", "enum": ["untrusted-draft", "deterministic-check", "verified-by-command"] }
+        }
+      }
+    },
+    "verification": { "type": "array" }
+  }
+}

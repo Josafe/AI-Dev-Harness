@@ -216,6 +216,7 @@ function global:Invoke-RestMethod {
     }
 
     $entry = @{ uri = $Uri; method = $Method; violation = $false; extraArgs = 0; timeoutSec = $TimeoutSec; contentType = [string]$ContentType }
+    $request = $null
     if ($Body -is [byte[]]) {
         $request = [System.Text.Encoding]::UTF8.GetString($Body) | ConvertFrom-Json
         $names = @($request.PSObject.Properties | ForEach-Object { $_.Name } | Sort-Object)
@@ -257,15 +258,27 @@ function global:Invoke-RestMethod {
             if ($route -ceq "tags") {
                 return [pscustomobject]@{ models = @($step.models | ForEach-Object { [pscustomobject]@{ name = [string]$_ } }) }
             }
+            # Phase 3 A4 (RK-305): the answer reports a prompt_eval_count that is about
+            # one fifth of the characters sent (a healthy 4 to 5 characters per token),
+            # so the new truncation rule (more than 7 characters per token) stays quiet on
+            # every Phase 2 case; a step may set promptEvalCount to say otherwise. A
+            # request without a prompt (a warm-up) keeps the old value 5.
+            $promptEvalCount = 5
+            if ($null -ne $step.PSObject.Properties["promptEvalCount"]) { $promptEvalCount = [long]$step.promptEvalCount }
+            elseif ($null -ne $request) {
+                $sentChars = ([string]$request.system).Length + ([string]$request.prompt).Length
+                if ([long][math]::Floor($sentChars / 5) -gt 5) { $promptEvalCount = [long][math]::Floor($sentChars / 5) }
+            }
             $answer = [ordered]@{
                 response             = [string]$step.response
                 total_duration       = 1000
                 load_duration        = 100
-                prompt_eval_count    = 5
+                prompt_eval_count    = $promptEvalCount
                 prompt_eval_duration = 200
                 eval_count           = 10
                 eval_duration        = 300
             }
+            if ($step.omitPromptEvalCount) { $answer.Remove("prompt_eval_count") }
             if ($step.doneReason) { $answer.done_reason = [string]$step.doneReason }
             if ($step.thinking) { $answer.thinking = [string]$step.thinking }
             return [pscustomobject]$answer
@@ -551,6 +564,10 @@ $v1Valid = "{ ""ollamaUrl"": ""$fakeUrl"", ""defaultModel"": ""test-model-a"", "
 
 $tagsAlpha = @((New-Step "ok" @{ models = @("test-model-alpha") }))
 $okReply = { param($Text) (New-Step "ok" @{ response = $Text; doneReason = "stop" }) }
+# Phase 3 A4 (RK-305): an answer without prompt_eval_count, for the cases whose prompt is
+# far larger than the tiny window of their configuration (1000 tokens): no count can be
+# both below C - R and above chars / 7, so the cases are about budget_exceeded alone.
+$okReplyNoCount = { param($Text) (New-Step "ok" @{ response = $Text; doneReason = "stop"; omitPromptEvalCount = $true }) }
 
 # WP-2D2: the answers of the reviewer and the reviser, and the two subjects of the cases.
 $reviewPass = "# Specification Review`r`n`r`n## Status`r`n`r`nPASS`r`n`r`n## Summary`r`n`r`nFake reviewer response."

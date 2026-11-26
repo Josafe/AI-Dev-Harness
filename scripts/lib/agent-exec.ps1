@@ -255,18 +255,36 @@ function Get-AgentRetryDelaySec {
     return [int]$delay
 }
 
+# Phase 3 A4 (FR-317, RN-4): the one place where the engine reads text to pick a
+# category. True when the Ollama JSON "error" string of a 5xx answer contains (ordinal,
+# case-sensitive) one of the three literal markers of a model that did not load. It
+# is a separate pure function so that Get-AgentErrorCategory itself holds no text search
+# (the NFR-202 static scan of the classifier stays as it was); it reads only its argument,
+# never an exception message, and never the whole body.
+function Test-OllamaLoadFailureText {
+    param([AllowNull()][AllowEmptyString()][string]$Text)
+
+    if ([string]::IsNullOrEmpty($Text)) { return $false }
+    foreach ($marker in @('Load failed', 'CUDA error', 'llama-server process has terminated')) {
+        if ($Text.IndexOf($marker, [System.StringComparison]::Ordinal) -ge 0) { return $true }
+    }
+    return $false
+}
+
 # WP-2B2: error categories (FR-211, NFR-202). Pure: it reads no file and sends
 # nothing. Rows are checked top to bottom, the first match wins, so an HTTP status
 # beats a webStatus. The category comes only from HttpStatus, Failure.exceptionType
-# and Failure.webStatus, never from message text. The Ollama JSON body is read only
-# to build detail, which never decides anything.
+# and Failure.webStatus, never from message text, with one documented exception
+# (Phase 3 FR-317): an HTTP status 500 to 599 whose Ollama JSON "error" string holds
+# a model-load marker (Test-OllamaLoadFailureText) is model_load_failed. The Ollama
+# JSON body is otherwise read only to build detail, which never decides anything.
 #   -Failure/-HttpStatus  classify a transport failure record (FR-204);
 #   -Category             the fixed record of a category named by the engine
 #                         (context_budget_exceeded, thinking_budget_exhausted,
 #                         empty_response, format_invalid, model_not_installed, or
 #                         any other category), so every hint has one home.
 # Returns { category, retryable, hint, detail }; retryable is true for http_5xx
-# and transport_reset only. detail is Ollama's JSON "error" string (at most 500
+# and transport_reset only (model_load_failed is never retried). detail is Ollama's JSON "error" string (at most 500
 # characters) when there is one, else the exception type name and webStatus.
 function Get-AgentErrorCategory {
     [CmdletBinding(DefaultParameterSetName = 'ByFailure')]
@@ -288,6 +306,7 @@ function Get-AgentErrorCategory {
         'empty_response'            = 'The model returned an empty answer. Try again, or use a shorter input.'
         'format_invalid'            = 'The answer did not have the expected format.'
         'model_not_installed'       = 'The model is not installed on the Ollama server. Pull it with ollama pull, or choose another profile.'
+        'model_load_failed'         = 'The model could not be loaded by the Ollama server. Retrying at once does not help. Restarting the Ollama server may clear it; if it comes back after days of uptime, rebooting the machine is the remedy that worked.'
     }
 
     if ($PSCmdlet.ParameterSetName -eq 'ByName') {
@@ -337,7 +356,8 @@ function Get-AgentErrorCategory {
         $exceptionType -ceq 'System.IO.IOException' -or $exceptionType -ceq 'System.Net.Sockets.SocketException') { $name = 'transport_reset' }
 
     # detail: Ollama's JSON error string when there is one, else type and webStatus.
-    # It is display data; nothing above or below reads it to decide.
+    # It is display data; only for a 5xx is the same string also given to
+    # Test-OllamaLoadFailureText (FR-317).
     $detail = $null
     if ($body -is [string] -and $body.Length -gt 0) {
         try {
@@ -348,6 +368,7 @@ function Get-AgentErrorCategory {
         }
         catch { $detail = $null }
     }
+    if ($name -ceq 'http_5xx' -and $null -ne $detail -and (Test-OllamaLoadFailureText -Text $detail)) { $name = 'model_load_failed' }
     if ($null -eq $detail) {
         $parts = @()
         if ($exceptionType.Length -gt 0) { $parts += $exceptionType }
@@ -629,6 +650,102 @@ function Test-OllamaModel {
         detail     = $detail
         hint       = $hint
         httpStatus = $httpStatus
+    }
+}
+
+# Phase 3 A4 (FR-318, RN-5): the load check, library half. One tiny request that loads
+# the model and generates nothing: the body of the warm-up request (FR-213), that is
+# only model, the options of the execution (which carry num_ctx = the profile's
+# contextWindow, so the model is not reloaded later) and stream false; no prompt and
+# no keep_alive (FR-207). One attempt, no wait, no retry, no telemetry, no cache, and
+# the timeout of the execution. A failure is classified like any call
+# (Get-AgentErrorCategory). Returns { loaded, category, hint, durationMs }; category
+# and hint are $null when loaded. It never throws for a transport failure; a missing
+# or malformed argument is a programmer error (invalid_arguments).
+#   -Execution  a record of Resolve-HarnessExecution (model, timeoutSec, options)
+#   -Registry   a normalized registry (ollama.url)
+#   -Transport  script block or function taking -Request (FR-204); default
+#               Invoke-OllamaHttp.
+function Test-OllamaModelLoad {
+    param(
+        [Parameter(Mandatory = $true)]$Execution,
+        [Parameter(Mandatory = $true)]$Registry,
+        [AllowNull()]$Transport = $null
+    )
+
+    foreach ($member in @('model', 'timeoutSec', 'options')) {
+        if ($null -eq $Execution -or $null -eq $Execution.PSObject.Properties[$member]) {
+            throw "invalid_arguments: -Execution must be a record of Resolve-HarnessExecution (no '$member')."
+        }
+    }
+    if ($null -eq $Registry -or $null -eq $Registry.ollama -or $null -eq $Registry.ollama.PSObject.Properties['url']) {
+        throw "invalid_arguments: -Registry must be a normalized registry (no 'ollama.url')."
+    }
+    if ([string]::IsNullOrWhiteSpace([string]$Execution.model)) {
+        throw "invalid_arguments: -Execution has a blank model."
+    }
+
+    $stopwatch = [System.Diagnostics.Stopwatch]::StartNew()
+    $url = ([string]$Registry.ollama.url).TrimEnd('/')
+
+    $payload = [ordered]@{ model = [string]$Execution.model }
+    if ($null -ne $Execution.options -and @($Execution.options.PSObject.Properties).Count -gt 0) { $payload.options = $Execution.options }
+    $payload.stream = $false
+    $json = $payload | ConvertTo-Json -Depth 10
+    $bodyBytes = (New-Object System.Text.UTF8Encoding($false)).GetBytes($json)
+    $request = @{
+        Url        = "$url/api/generate"
+        Method     = 'Post'
+        Body       = $bodyBytes
+        TimeoutSec = [int]$Execution.timeoutSec
+        Purpose    = 'warmup'
+    }
+
+    # The transport may throw or return something that is not a record: both are
+    # failure records, as in Invoke-AgentModel (FR-204).
+    $record = $null
+    $thrown = $null
+    $completed = $false
+    foreach ($once in 1) {
+        try {
+            $returned = @(if ($null -eq $Transport) { Invoke-OllamaHttp -Request $request } else { & $Transport -Request $request })
+            if ($returned.Count -gt 0) { $record = $returned[$returned.Count - 1] }
+            $completed = $true
+        }
+        catch {
+            $thrown = [pscustomobject][ordered]@{
+                ok         = $false
+                response   = $null
+                httpStatus = $null
+                failure    = [pscustomobject][ordered]@{ exceptionType = $_.Exception.GetType().FullName; webStatus = $null; body = $null }
+            }
+        }
+    }
+    if ($null -ne $thrown) { $record = $thrown }
+    elseif (-not $completed -or $null -eq $record -or $null -eq $record.PSObject.Properties['ok']) {
+        $record = [pscustomobject][ordered]@{
+            ok         = $false
+            response   = $null
+            httpStatus = $null
+            failure    = [pscustomobject][ordered]@{ exceptionType = 'invalid_transport_result'; webStatus = $null; body = $null }
+        }
+    }
+
+    $stopwatch.Stop()
+    if ($record.ok) {
+        return [pscustomobject][ordered]@{
+            loaded     = $true
+            category   = $null
+            hint       = $null
+            durationMs = [long]$stopwatch.ElapsedMilliseconds
+        }
+    }
+    $classification = Get-AgentErrorCategory -Failure $record.failure -HttpStatus $record.httpStatus
+    return [pscustomobject][ordered]@{
+        loaded     = $false
+        category   = $classification.category
+        hint       = $classification.hint
+        durationMs = [long]$stopwatch.ElapsedMilliseconds
     }
 }
 
@@ -941,6 +1058,21 @@ function Invoke-AgentModel {
             if ($evaluated -is [int] -or $evaluated -is [long] -or $evaluated -is [decimal] -or $evaluated -is [double]) {
                 if ([double]$evaluated -ge ([double]$Execution.contextWindow - [double]$Execution.reservedOutputTokens)) {
                     $warnings.Add('possible_prompt_truncation')
+                }
+            }
+        }
+
+        # Phase 3 FR-316 (RN-1): the prompt is more than 7 characters per evaluated
+        # token, so the server cut it (a cut to half the window doubles the ratio; healthy
+        # text is 3.9 to 5.4). The constant 7 lives here, not in the registry. Only a real
+        # number above 0 counts; anything else adds nothing and never throws. A warning
+        # only: the outcome of the call is not changed (RN-3).
+        $truncationCharsPerToken = 7
+        if ($null -ne $responseObject -and $null -ne $responseObject.PSObject.Properties['prompt_eval_count']) {
+            $seenTokens = $responseObject.prompt_eval_count
+            if ($seenTokens -is [int] -or $seenTokens -is [long] -or $seenTokens -is [decimal] -or $seenTokens -is [double]) {
+                if ([double]$seenTokens -gt 0 -and [double]$promptChars -gt ($truncationCharsPerToken * [double]$seenTokens)) {
+                    $warnings.Add('prompt_truncation_detected')
                 }
             }
         }

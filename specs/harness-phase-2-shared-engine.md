@@ -290,6 +290,8 @@ With a fake transport, one call with a 60,000-character prompt takes less than 1
 
 Classification, retries, telemetry categories and every test assertion are independent of the language of messages. Tests assert categories, status values, exit codes, record fields and the harness's own fixed wording, never text produced by PowerShell, .NET or Ollama (Phase 0 NFR-006, Phase 1 NFR-102).
 
+*Phase 3 note (FR-317):* one documented exception. An HTTP status 500 to 599 whose Ollama JSON `error` string contains `Load failed`, `CUDA error` or `llama-server process has terminated` (ordinal, case-sensitive) is the category `model_load_failed`, which is not retried; the engine reads that server text in `Test-OllamaLoadFailureText` and nowhere else.
+
 ### NFR-203 — Offline, side-effect-free tests
 
 **Source:** USER

@@ -375,7 +375,7 @@ try {
 
     foreach ($warnCase in @(@{ Name = "budget-warn"; Config = $tinyWarn; Label = "warn" }, @{ Name = "budget-default"; Config = $tinyDefault; Label = "the default (no budgetMode key)" })) {
         Test-Case "AC-203 $($warnCase.Label): the same prompt is sent, one Warning line, exit 0, the record carries the warning" {
-            $run = Invoke-Case -Name $warnCase.Name -ConfigText $warnCase.Config -TaskFile $bigTask -TagsSteps $tagsAlpha -GenerateSteps @((& $okReply "Sent in warn mode."))
+            $run = Invoke-Case -Name $warnCase.Name -ConfigText $warnCase.Config -TaskFile $bigTask -TagsSteps $tagsAlpha -GenerateSteps @((& $okReplyNoCount "Sent in warn mode."))
             Assert-Guards $run
             Assert-Equal "exit code" 0 $run.ExitCode
             Assert-Equal "generate calls" 1 (@(Get-Generations $run).Count)

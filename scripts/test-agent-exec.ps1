@@ -1023,7 +1023,9 @@ try {
         Assert-Equal "the baseline has no budgetMode: the default is warn" "warn" $registry.defaults.budgetMode
         # window 16384, reserved 8192, margin ceil(0.1 x 16384) = 1639 -> 6553 available;
         # 26000 characters at 3.5 per token are ceil(7428.57) = 7429 tokens.
-        $fake = New-FakeTransport -Steps @((New-Ok -Text "reviewed"))
+        # RK-305: the fake prompt_eval_count was 10 against 26000 characters; it is 5200 now
+        # (5 characters per token), below C - R = 8192 and so no truncation warning.
+        $fake = New-FakeTransport -Steps @((New-Ok -Text "reviewed" -PromptEvalCount 5200))
         $caseRoot = New-CaseRoot
         $result = Invoke-Engine -Exec $reviewer -Registry $registry -Fake $fake -System ("x" * 20000) -Prompt ("y" * 6000) -TelemetryRoot $caseRoot
         Assert-Equal "status (sent, not refused)" "ok" $result.status
@@ -1653,7 +1655,8 @@ try {
 
     Test-Case "AC-203 warn: the same 32001-character prompt is sent whole (never truncated), with the warning budget_exceeded in meta and in the telemetry" {
         $registry = New-TestRegistry -BudgetMode "warn" -CharsPerToken 4
-        $fake = New-FakeTransport -Steps @((New-Ok))
+        # RK-305: the fake prompt_eval_count was 10; it is 6400 now (32001 characters at 5 per token)
+        $fake = New-FakeTransport -Steps @((New-Ok -PromptEvalCount 6400))
         $caseRoot = New-CaseRoot
         $system = ("s" * 31000) + "END"
         $prompt = ("p" * 1000) + "TAIL"
@@ -1671,7 +1674,12 @@ try {
     Test-Case "AC-203 (final QA N-9) the smallest charsPerToken the registry accepts (0.01) and the largest (10) with a 1,000,001-character prompt never throw: one request, the warning, the literal estimate" {
         foreach ($case in @(@{ Chars = 0.01; Estimate = 100000100 }, @{ Chars = 10; Estimate = 100001 })) {
             $registry = New-TestRegistry -CharsPerToken $case.Chars
-            $fake = New-FakeTransport -Steps @((New-Ok))
+            # RK-305: no fake prompt_eval_count at all (it was 10). A real server would report
+            # at most half the window for a prompt this long, which the two warnings of
+            # FR-316 would both flag; the case is about the estimate and budget_exceeded.
+            $answer = New-FakeGenerateResponse -Text "answer"
+            $answer.PSObject.Properties.Remove("prompt_eval_count")
+            $fake = New-FakeTransport -Steps @((New-FakeOkRecord -Response $answer))
             $caseRoot = New-CaseRoot
             $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -System ("s" * 1000000) -Prompt "p" -TelemetryRoot $caseRoot
             Assert-Equal "$($case.Chars) status" "ok" $result.status
@@ -1684,7 +1692,8 @@ try {
     Test-Case "AC-203 the default budgetMode is warn (a registry without the key): an oversized prompt is sent with the warning" {
         $registry = New-TestRegistry -CharsPerToken 4
         Assert-Equal "normalized budgetMode" "warn" $registry.defaults.budgetMode
-        $fake = New-FakeTransport -Steps @((New-Ok))
+        # RK-305: the fake prompt_eval_count was 10; it is 8000 now (40001 characters at 5 per token)
+        $fake = New-FakeTransport -Steps @((New-Ok -PromptEvalCount 8000))
         $result = Invoke-Engine -Exec (Get-TestExecution $registry) -Registry $registry -Fake $fake -System ("s" * 40000) -Prompt "p"
         Assert-Equal "status" "ok" $result.status
         Assert-Equal "warning" "budget_exceeded" ($result.meta.warnings -join ",")
@@ -1692,7 +1701,9 @@ try {
 
     Test-Case "AC-203 a profile without a window or reserved tokens skips the budget even in enforce mode; telemetry has empty context_window and est_prompt_tokens but a prompt_chars" {
         $registry = New-TestRegistry -BudgetMode "enforce" -CharsPerToken 4
-        $fake = New-FakeTransport -Steps @((New-Ok))
+        # RK-305: the fake prompt_eval_count was 10; it is 40000 now (200001 characters at 5 per token;
+        # a profile without a window has no possible_prompt_truncation rule)
+        $fake = New-FakeTransport -Steps @((New-Ok -PromptEvalCount 40000))
         $caseRoot = New-CaseRoot
         $result = Invoke-Engine -Exec (Get-TestExecution $registry "a-delta") -Registry $registry -Fake $fake -System ("s" * 200000) -Prompt "p" -TelemetryRoot $caseRoot
         Assert-Equal "status" "ok" $result.status
@@ -2269,8 +2280,8 @@ public class HarnessEndlessResponse : WebResponse
                 if ($catch.Extent.Text.Contains("exceptionType")) { $withType += $name }
             }
         }
-        # Invoke-AgentModel and Test-OllamaModel also wrap a throwing injected transport (FR-204, third bullet)
-        Assert-Equal "functions whose catch builds a failure record" "Invoke-AgentModel,Invoke-OllamaHttp,Test-OllamaModel" ((@($withType | Sort-Object -Unique)) -join ",")
+        # Invoke-AgentModel, Test-OllamaModel and (Phase 3 A4) Test-OllamaModelLoad also wrap a throwing injected transport (FR-204, third bullet)
+        Assert-Equal "functions whose catch builds a failure record" "Invoke-AgentModel,Invoke-OllamaHttp,Test-OllamaModel,Test-OllamaModelLoad" ((@($withType | Sort-Object -Unique)) -join ",")
         $tryInOllamaHttp = @($functionAsts["Invoke-OllamaHttp"].FindAll({ param($n) $n -is [System.Management.Automation.Language.CatchClauseAst] }, $true))
         Assert-True "Invoke-OllamaHttp has a catch for the call" ($tryInOllamaHttp.Count -ge 1)
     }

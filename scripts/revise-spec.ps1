@@ -128,6 +128,16 @@ if (@($call.meta.warnings) -ccontains 'budget_exceeded') {
     Write-Host "Warning: budget_exceeded (estimated $($call.meta.budget.estTokens) tokens, available $($call.meta.budget.available))." -ForegroundColor Yellow
 }
 
+# Prompt truncation (FR-316): the server may cut a prompt that does not fit the window
+# with HTTP 200. The strong rule is printed first; the old rule is weak. Both are
+# warnings only: the outcome of the call is not changed.
+if (@($call.meta.warnings) -ccontains 'prompt_truncation_detected') {
+    Write-Host "Warning: prompt_truncation_detected (the prompt of $($call.meta.promptChars) characters was evaluated as only $($call.meta.promptEvalCount) tokens: the server probably cut it, so the answer may ignore part of the input)." -ForegroundColor Yellow
+}
+if (@($call.meta.warnings) -ccontains 'possible_prompt_truncation') {
+    Write-Host "Warning: possible_prompt_truncation (weak signal: the evaluated tokens, $($call.meta.promptEvalCount), reach the context window minus the reserved output tokens; it also fires on healthy prompts)." -ForegroundColor Yellow
+}
+
 if ($call.status -ne 'ok') {
     $failure = $call.error
 

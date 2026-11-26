@@ -408,15 +408,11 @@ try {
         }
     }
 
-    # B4 implemented 'specify' (scripts\test-harness-e2e.ps1 covers it); the stubs that remain:
+    # B4 implemented 'specify' (scripts\test-harness-e2e.ps1 covers it) and B5 review, revise, status, list (scripts\test-harness-review-status.ps1); the stubs that remain:
     foreach ($case in @(
-            @{ Label = "review"; Args = (New-ArgumentList "review" @("TargetPath", "Name", "Task")) },
-            @{ Label = "revise"; Args = (New-ArgumentList "revise" @("TargetPath", "Name", "Revision", "Task")) },
             @{ Label = "scan"; Args = (New-ArgumentList "scan" @("TargetPath")) },
-            @{ Label = "context"; Args = (New-ArgumentList "context" @("TargetPath", "Include")) },
-            @{ Label = "status"; Args = (New-ArgumentList "status" @("RunId")) },
-            @{ Label = "list"; Args = (New-ArgumentList "list" @()) })) {
-        Test-Case "AC-301 a valid '$($case.Label)' reaches its handler in harness.ps1 (a stub until B4, B5, B8): exit 2, internal_error, no run" {
+            @{ Label = "context"; Args = (New-ArgumentList "context" @("TargetPath", "Include")) })) {
+        Test-Case "AC-301 a valid '$($case.Label)' reaches its handler in harness.ps1 (a stub until B8): exit 2, internal_error, no run" {
             Clear-Runs
             $run = Invoke-Harness -Arguments $case.Args
             Assert-Equal "exit code" 2 $run.ExitCode

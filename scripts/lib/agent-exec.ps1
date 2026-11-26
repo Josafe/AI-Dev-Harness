@@ -306,7 +306,7 @@ function Get-AgentErrorCategory {
         'empty_response'            = 'The model returned an empty answer. Try again, or use a shorter input.'
         'format_invalid'            = 'The answer did not have the expected format.'
         'model_not_installed'       = 'The model is not installed on the Ollama server. Pull it with ollama pull, or choose another profile.'
-        'model_load_failed'         = 'The model could not be loaded by the Ollama server. Retrying at once does not help. Restarting the Ollama server may clear it; if it comes back after days of uptime, rebooting the machine is the remedy that worked.'
+        'model_load_failed'         = 'The model could not be loaded by the Ollama server. Retrying at once does not help. Restarting the Ollama server has not cleared this fault; rebooting the machine does.'
     }
 
     if ($PSCmdlet.ParameterSetName -eq 'ByName') {

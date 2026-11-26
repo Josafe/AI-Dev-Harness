@@ -274,6 +274,7 @@ try {
         $named = Get-AgentErrorCategory -Category "model_load_failed"
         Assert-Equal "by name: category" "model_load_failed" $named.category
         Assert-Equal "by name: retryable" $false $named.retryable
+        Assert-Equal "the FR-317 hint text (owner wording)" "The model could not be loaded by the Ollama server. Retrying at once does not help. Restarting the Ollama server has not cleared this fault; rebooting the machine does." $named.hint
         Assert-True "the hint is one line of ASCII" ($named.hint -cmatch '^[\x20-\x7E]+$')
         $failure = [pscustomobject]@{ exceptionType = "System.Net.WebException"; webStatus = "ProtocolError"; body = '{"error":"CUDA error: out of memory"}' }
         $classified = Get-AgentErrorCategory -Failure $failure -HttpStatus 500

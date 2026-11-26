@@ -14,7 +14,9 @@
 #   Handlers (one function per command, see $script:HarnessCliHandlers)
 #     stages, config, doctor, validate      B3
 #     unsupported stages (exit 4)           B3
-#     specify, review, revise, scan, context, status, list   stubs until B4, B5, B8
+#     specify                               B4 (run layout, manifest checkpoints,
+#                                           telemetry correlation, names, overwrite)
+#     review, revise, scan, context, status, list   stubs until B5, B8
 #
 # HOW A COMMAND IS DISPATCHED (interface for B4 and later)
 #   Invoke-HarnessCli validates the command and its options, then calls
@@ -35,8 +37,10 @@
 # text. Argument errors exit 2 and never create a manifest or a run directory.
 
 . (Join-Path $PSScriptRoot 'config.ps1')
+. (Join-Path $PSScriptRoot 'telemetry.ps1')
 . (Join-Path $PSScriptRoot 'agent-exec.ps1')
 . (Join-Path $PSScriptRoot 'manifest.ps1')
+. (Join-Path $PSScriptRoot 'workflow.ps1')
 
 $script:HarnessCliLibDirectory = $PSScriptRoot
 
@@ -116,9 +120,10 @@ $script:HarnessCliStageScriptKeys = @('runner', 'validator', 'reviewer', 'revise
 # Output
 # ---------------------------------------------------------------------------
 
-# Text for a message line: one line, printable ASCII, at most 300 characters.
+# Text for a message line: one line, printable ASCII, at most 300 characters (B4: the
+# manifest keeps up to 500 with -MaxLength, FR-307).
 function Format-HarnessCliText {
-    param([AllowNull()][string]$Text)
+    param([AllowNull()][string]$Text, [int]$MaxLength = 300)
 
     if ($null -eq $Text) { return '' }
     $builder = New-Object System.Text.StringBuilder
@@ -126,7 +131,7 @@ function Format-HarnessCliText {
         if ($c -ge [char]32 -and $c -le [char]126) { [void]$builder.Append($c) }
         elseif ($c -eq [char]10 -or $c -eq [char]13 -or $c -eq [char]9) { [void]$builder.Append(' ') }
         else { [void]$builder.Append('?') }
-        if ($builder.Length -ge 300) { break }
+        if ($builder.Length -ge $MaxLength) { break }
     }
     return $builder.ToString()
 }
@@ -642,6 +647,247 @@ function New-HarnessCliManifest {
         artifacts     = @()
         verification  = @()
     }
+}
+
+# ---------------------------------------------------------------------------
+# Specification names, family and overwrite policy (FR-319, D-305, D-307; B4)
+# ---------------------------------------------------------------------------
+
+# <target>\.ai-harness\specs: the only folder of a target the CLI writes artifacts to.
+function Get-HarnessCliSpecDirectory {
+    param([Parameter(Mandatory = $true)][string]$TargetPath)
+    return (Join-Path (Join-Path $TargetPath '.ai-harness') 'specs')
+}
+
+# FR-319: <target>, <target>\.ai-harness and <target>\.ai-harness\specs must not be
+# reparse points (and the two lower levels, when they exist, must be folders). Returns
+# $null when they are safe, else the text of an invalid_arguments line. Missing levels are
+# fine (they are created later); nothing is created here.
+function Test-HarnessCliArtifactDirectory {
+    param([Parameter(Mandatory = $true)][string]$TargetPath)
+
+    $harnessDirectory = Join-Path $TargetPath '.ai-harness'
+    $levels = @(
+        @{ Path = $TargetPath; Label = '-TargetPath' },
+        @{ Path = $harnessDirectory; Label = '<target>\.ai-harness' },
+        @{ Path = (Join-Path $harnessDirectory 'specs'); Label = '<target>\.ai-harness\specs' }
+    )
+    foreach ($level in $levels) {
+        $path = [string]$level.Path
+        if ([System.IO.Directory]::Exists($path)) {
+            if (Test-HarnessCliReparsePoint -Path $path) { return ($level.Label + ' is a reparse point (junction or symbolic link).') }
+        }
+        elseif ([System.IO.File]::Exists($path)) {
+            return ($level.Label + ' is a file, not a folder.')
+        }
+        else { break }
+    }
+    return $null
+}
+
+# The family of a name (FR-319): <Name>.md, <Name>.review.md, <Name>.revised-vN.md and
+# <Name>.revised-vN.review.md (N digits), compared exactly and case-insensitively.
+# Returns the full paths of the family files that exist in -SpecDirectory, ordinal order.
+function Get-HarnessCliSpecFamily {
+    param([Parameter(Mandatory = $true)][string]$SpecDirectory, [Parameter(Mandatory = $true)][string]$Name)
+
+    if (-not [System.IO.Directory]::Exists($SpecDirectory)) { return @() }
+    $pattern = '\A' + [regex]::Escape($Name) + '(?:\.review|\.revised-v[0-9]+|\.revised-v[0-9]+\.review)?\.md\z'
+    $options = [System.Text.RegularExpressions.RegexOptions]([System.Text.RegularExpressions.RegexOptions]::IgnoreCase -bor [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+    $found = New-Object 'System.Collections.Generic.List[string]'
+    foreach ($file in [System.IO.Directory]::GetFiles($SpecDirectory)) {
+        if ([regex]::IsMatch([System.IO.Path]::GetFileName($file), $pattern, $options)) { $found.Add($file) }
+    }
+    $array = $found.ToArray()
+    [System.Array]::Sort($array, [System.StringComparer]::Ordinal)
+    return @($array)
+}
+
+# -Overwrite (FR-319): moves each file to -Destination (runs\<id>\replaced\), copy then
+# delete when the volumes differ. Returns { name, path, sha256 } per moved file (path is
+# the new location). Throws on an I/O failure (the caller reports internal_error).
+function Move-HarnessCliSpecFamily {
+    param([Parameter(Mandatory = $true)][string[]]$Files, [Parameter(Mandatory = $true)][string]$Destination)
+
+    [void][System.IO.Directory]::CreateDirectory($Destination)
+    $moved = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($file in $Files) {
+        $leaf = [System.IO.Path]::GetFileName($file)
+        $to = Join-Path $Destination $leaf
+        $sameVolume = [string]::Equals([System.IO.Path]::GetPathRoot($file), [System.IO.Path]::GetPathRoot($to), [System.StringComparison]::OrdinalIgnoreCase)
+        if ($sameVolume) { [System.IO.File]::Move($file, $to) }
+        else {
+            [System.IO.File]::Copy($file, $to, $false)
+            [System.IO.File]::Delete($file)
+        }
+        $moved.Add([pscustomobject][ordered]@{ name = $leaf; path = $to; sha256 = (Get-HarnessFileSha256 -Path $to) })
+    }
+    return @($moved.ToArray())
+}
+
+# ---------------------------------------------------------------------------
+# Telemetry correlation (FR-307; B4). Reads with Read-HarnessModelTelemetry (A1): the
+# telemetry mutex, FileShare.ReadWrite, IOException retried, a leading BOM dropped.
+# ---------------------------------------------------------------------------
+
+# FR-307: engine category -> FR-308 category.
+$script:HarnessCliEngineCategoryMap = [ordered]@{
+    'transport_unreachable'     = 'ollama_unreachable'
+    'http_4xx'                  = 'http_error'
+    'http_5xx'                  = 'http_error'
+    'transport_reset'           = 'http_error'
+    'transport_other'           = 'http_error'
+    'empty_response'            = 'empty_output'
+    'thinking_budget_exhausted' = 'empty_output'
+    'format_invalid'            = 'invalid_output_format'
+    'timeout'                   = 'timeout'
+    'context_budget_exceeded'   = 'context_budget_exceeded'
+    'model_not_installed'       = 'model_not_installed'
+    'model_load_failed'         = 'model_load_failed'
+}
+
+# The FR-308 category of an engine category, or $null for an empty or unknown one.
+function ConvertTo-HarnessCliCategory {
+    param([AllowNull()][string]$EngineCategory)
+
+    if ([string]::IsNullOrEmpty($EngineCategory)) { return $null }
+    foreach ($key in $script:HarnessCliEngineCategoryMap.Keys) {
+        if ([string]::Equals($key, $EngineCategory, [System.StringComparison]::Ordinal)) { return [string]$script:HarnessCliEngineCategoryMap[$key] }
+    }
+    return $null
+}
+
+# The error object of a stage or a run (FR-305): category, engineCategory, message, hint
+# (the engine's fixed hint of engineCategory), retryable (true only for http_5xx and
+# transport_reset), httpStatus.
+function New-HarnessCliError {
+    param(
+        [Parameter(Mandatory = $true)][string]$Category,
+        [AllowNull()][string]$Message,
+        [AllowNull()][string]$EngineCategory = $null,
+        $HttpStatus = $null,
+        [AllowNull()][string]$Hint = $null
+    )
+
+    $engine = $null
+    if ($null -ne (ConvertTo-HarnessCliCategory -EngineCategory $EngineCategory)) { $engine = [string]$EngineCategory }
+    $hintText = $null
+    if (-not [string]::IsNullOrEmpty($Hint)) { $hintText = [string]$Hint }
+    elseif ($null -ne $engine) { $hintText = [string](Get-AgentErrorCategory -Category $engine).hint }
+    $status = $null
+    if ($null -ne $HttpStatus -and [string]$HttpStatus -cmatch '\A[0-9]{1,9}\z') { $status = [long]$HttpStatus }
+    $text = Format-HarnessCliText -Text $Message -MaxLength 500
+    if ($text.Length -eq 0) { $text = 'The stage failed.' }
+    return [ordered]@{
+        category       = $Category
+        engineCategory = $engine
+        message        = $text
+        hint           = $hintText
+        retryable      = ($engine -ceq 'http_5xx' -or $engine -ceq 'transport_reset')
+        httpStatus     = $status
+    }
+}
+
+# The byte length of logs\model-calls.jsonl (0 when absent): the offset noted at
+# stage_begin. Result { Offset, LockTimedOut }; never throws.
+function Get-HarnessCliTelemetryOffset {
+    param([Parameter(Mandatory = $true)][string]$HarnessRoot)
+
+    try {
+        $read = Read-HarnessModelTelemetry -Root $HarnessRoot -LengthOnly
+        return [pscustomobject]@{ Offset = [long]$read.Length; LockTimedOut = [bool]$read.LockTimedOut }
+    }
+    catch { return [pscustomobject]@{ Offset = 0L; LockTimedOut = $true } }
+}
+
+# A non-negative integer of a telemetry field, or $null (empty, missing, not a number).
+function ConvertTo-HarnessCliTelemetryNumber {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    $text = [string]$Value
+    if ($text -cnotmatch '\A[0-9]{1,15}\z') { return $null }
+    return [long]$text
+}
+
+function ConvertTo-HarnessCliTelemetryText {
+    param([AllowNull()]$Value)
+
+    if ($null -eq $Value) { return $null }
+    $text = [string]$Value
+    if ($text.Length -eq 0) { return $null }
+    return $text
+}
+
+# The telemetry of one agent stage (FR-307): the parsable lines appended since -FromOffset
+# whose run_id equals -RunId; the last one wins. Result { Fields, Count, Warnings[] }:
+# Fields is $null without a record, else callId, engineAttempts, callDurationMs, warnings,
+# resolution, budget, engineCategory, httpStatus, errorText. Warnings: telemetry_lock_timeout,
+# telemetry_record_missing, telemetry_multiple_records. Never throws.
+function Get-HarnessCliStageTelemetry {
+    param(
+        [Parameter(Mandatory = $true)][string]$HarnessRoot,
+        [Parameter(Mandatory = $true)][string]$RunId,
+        [long]$FromOffset = 0
+    )
+
+    $warnings = New-Object 'System.Collections.Generic.List[string]'
+    $lines = @()
+    try {
+        $read = Read-HarnessModelTelemetry -Root $HarnessRoot -FromOffset $FromOffset
+        if ($read.LockTimedOut) { $warnings.Add('telemetry_lock_timeout') }
+        $lines = @($read.Lines)
+    }
+    catch { $warnings.Add('telemetry_lock_timeout') }
+
+    $records = New-Object 'System.Collections.Generic.List[object]'
+    foreach ($line in $lines) {
+        $record = $null
+        try { $record = ConvertFrom-Json -InputObject ([string]$line) -ErrorAction Stop } catch { $record = $null }
+        if ($null -eq $record -or $null -eq $record.PSObject.Properties['run_id']) { continue }
+        if ([string]::Equals([string]$record.run_id, $RunId, [System.StringComparison]::Ordinal)) { $records.Add($record) }
+    }
+
+    if ($records.Count -eq 0) {
+        $warnings.Add('telemetry_record_missing')
+        return [pscustomobject]@{ Fields = $null; Count = 0; Warnings = @($warnings.ToArray()) }
+    }
+    if ($records.Count -gt 1) { $warnings.Add('telemetry_multiple_records') }
+    $last = $records[$records.Count - 1]
+    $get = { param($name) if ($null -ne $last.PSObject.Properties[$name]) { return $last.$name } return $null }
+
+    $recordWarnings = New-Object 'System.Collections.Generic.List[string]'
+    $warningText = ConvertTo-HarnessCliTelemetryText -Value (& $get 'warnings')
+    if ($null -ne $warningText) {
+        foreach ($code in $warningText.Split([char]';')) {
+            $clean = Format-HarnessCliText -Text $code.Trim()
+            if ($clean.Length -gt 0 -and -not $recordWarnings.Contains($clean)) { $recordWarnings.Add($clean) }
+        }
+    }
+    $engineCategory = ConvertTo-HarnessCliTelemetryText -Value (& $get 'error_category')
+    if ($null -eq (ConvertTo-HarnessCliCategory -EngineCategory $engineCategory)) { $engineCategory = $null }
+    $contextWindow = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'context_window')
+    $fields = [pscustomobject][ordered]@{
+        callId         = ConvertTo-HarnessCliTelemetryText -Value (& $get 'call_id')
+        engineAttempts = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'attempts')
+        callDurationMs = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'duration_ms')
+        warnings       = @($recordWarnings.ToArray())
+        resolution     = [ordered]@{
+            profile     = ConvertTo-HarnessCliTelemetryText -Value (& $get 'profile')
+            model       = ConvertTo-HarnessCliTelemetryText -Value (& $get 'model')
+            modelSource = ConvertTo-HarnessCliTelemetryText -Value (& $get 'model_source')
+            timeoutSec  = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'timeout_sec')
+        }
+        budget         = [ordered]@{
+            contextWindow         = $contextWindow
+            estimatedPromptTokens = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'est_prompt_tokens')
+            withinBudget          = (-not $recordWarnings.Contains('budget_exceeded'))
+        }
+        engineCategory = $engineCategory
+        httpStatus     = ConvertTo-HarnessCliTelemetryNumber -Value (& $get 'http_status')
+        errorText      = ConvertTo-HarnessCliTelemetryText -Value (& $get 'error')
+    }
+    return [pscustomobject]@{ Fields = $fields; Count = $records.Count; Warnings = @($warnings.ToArray()) }
 }
 
 # ---------------------------------------------------------------------------

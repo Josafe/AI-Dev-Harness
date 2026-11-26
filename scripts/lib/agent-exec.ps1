@@ -408,7 +408,7 @@ function Reset-AgentExecState {
 # and, for generate and warmup, -ContentType and -Body, and nothing else. The fake
 # hosts of Phase 0 and Phase 1 declare these five parameters as a simple function,
 # which silently collects an extra one in $args; only the engine fake host of
-# test-engine-callsites.ps1 refuses and records any other (spec revision 3.3).
+# tests\lib\engine-fake-host.ps1 refuses and records any other (spec revision 3.3).
 # Returns { ok, response, httpStatus, failure } with failure = { exceptionType,
 # webStatus, body }. It never reads or returns the exception message: the HTTP
 # body comes from ErrorDetails (ToString gives the body text PowerShell stored

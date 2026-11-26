@@ -6,7 +6,7 @@ Read this INSTEAD of the whole spec, plus only the spec sections your package na
 
 One entry point `scripts/harness.ps1` over the existing scripts. Every workflow run gets a run directory `runs\<id>\` and a validated manifest and ends with a stable exit code (0 ok, 1 workflow failure, 2 error, 3 needs input, 4 unsupported stage). A run is a short foreground process that checkpoints its manifest; no daemon. Concurrent runs become safe. WP-2E findings become behavior. Legacy scripts keep their interfaces.
 
-- **3A** (no CLI design needed): A1 telemetry lock; A2 remove wrappers `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` with the nine `AC-216` cases (lines 1192, 1211, 1225, 1233, 1243, 1254, 1266, 1276, 2044 of `test-engine-callsites.ps1`), the wrapper driver (about 335-375), the `Write-Host` exemption and two pinned-list entries in `test-agent-prompts.ps1`; A3 suite split by script; A4 engine signals.
+- **3A** (DONE, merged; gate fixes applied): A1 telemetry lock; A2 wrappers `Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` deleted with their nine cases and driver; A3 `test-engine-callsites.ps1` split into three suites plus `tests/lib/engine-fake-host.ps1`; A4 engine signals (truncation, `model_load_failed`, `Test-OllamaModelLoad`).
 - **Gate 3A:** offline `test-all` twice, report, owner approval, tag `phase3a-done`; the spec may be revised before 3B.
 - **3B:** B1-B9, the CLI. Final QA (independent session) and tag `phase3-done` are the owner's.
 
@@ -31,10 +31,7 @@ One entry point `scripts/harness.ps1` over the existing scripts. Every workflow 
 
 | Pkg | Purpose | Implements | Read (spec) | Exit check | Model |
 |---|---|---|---|---|---|
-| A1 | Telemetry mutex, FileStream append, locked reader | FR-311c, FR-307 reader | FR-311 L175-179, FR-307 L127-133, AC-317 L396-402 | AC-317 | S impl, O review |
-| A2 | Delete 2 wrappers, 9 cases, driver, exemption, list (one commit) | FR-314 | Context L12-20, FR-314 L187-191, AC-322 L428-434 | AC-322 | S, S |
-| A3 | Split `test-engine-callsites.ps1`; a script compares case names | FR-315 | FR-315 L193-197, AC-323 L436-442 | AC-323 | S, S |
-| A4 | Truncation warning, `model_load_failed`, `Test-OllamaModelLoad`, warning lines | FR-316, FR-317, FR-318 load check | L199-214, L216-222, AC-331/332/333 L500-522 | AC-331, AC-332, library half of AC-333 | S, O |
+| A1-A4 | DONE (3A): telemetry lock, wrappers removed, suite split, engine signals | FR-311c, FR-314 to FR-318 | see section 4 | AC-317, 322, 323, 331 to 333 | done |
 | B1 | Manifest lib: ids, claim, atomic write/read, derived status, schema, validator, `.gitignore` | FR-304, 305, 306, 309 (status) | L84-125, L163-167, AC-308/309 L324-338, AC-329 L484-490 | AC-309, AC-329, writer-reader half of AC-308 | S, O |
 | B2 | Workflow extraction, `-Profile`, stage contract | FR-303 | L74-82, AC-302 L276-282, AC-304 L292-298, AC-330 L492-498 | AC-304, AC-330, AC-302 minus the two ContextFile additions | O, O |
 | B3 | Parser, `stages`, `config`, `doctor`, `validate`, unsupported stages | FR-301, 302, 308, 309, 318 | L32-72, L135-167, L216-222, AC-301 L268-274, AC-312 L356-362, AC-314 L372-378, AC-333 L516-522 | AC-301, AC-312, AC-314, AC-333 | S, S |
@@ -49,10 +46,11 @@ Always useful: Execution Order L573-596 (needs and order), Affected Files L562-5
 
 ## 4. Engine facts (read from the files)
 
-- `scripts/lib/agent-exec.ps1`: `New-RunAgentPrompt` (47), `Get-AgentErrorCategory` (271), `Invoke-OllamaHttp` (398), `Test-OllamaModel` (478), `Invoke-AgentModel` (662); wrappers to delete: `Invoke-HarnessGenerate` (1068), `Test-HarnessModelAvailable` (1125).
-- `Invoke-AgentModel` adds warnings `budget_exceeded` (about 829) and `possible_prompt_truncation` (about 943, the weak rule); FR-316 adds `prompt_truncation_detected`.
-- Phase 2 error categories (11): `http_5xx`, `http_4xx`, `timeout`, `transport_unreachable`, `transport_reset`, `transport_other`, `context_budget_exceeded`, `thinking_budget_exhausted`, `empty_response`, `format_invalid`, `model_not_installed`. Retried by the engine: `http_5xx`, `transport_reset`. FR-317 adds `model_load_failed` (not retried).
-- `scripts/lib/telemetry.ps1`: `Write-HarnessModelTelemetry`; v2 = 31 columns (14 legacy then 17); JSONL `logs\model-calls.jsonl`, CSV beside it; no lock today.
+- `scripts/lib/agent-exec.ps1` (find by function name, not line): `New-RunAgentPrompt`, `Test-OllamaLoadFailureText` (pure helper, used only by the classifier), `Get-AgentErrorCategory`, `Invoke-OllamaHttp`, `Test-OllamaModel`, `Test-OllamaModelLoad`, `Invoke-AgentModel`. The two wrappers are gone (AC-322).
+- `Invoke-AgentModel` warnings: `budget_exceeded`, `possible_prompt_truncation` (weak rule), `prompt_truncation_detected` (strong rule, FR-316; scripts print it before the weak line).
+- 12 engine categories (hints table of `Get-AgentErrorCategory`): `http_5xx`, `http_4xx`, `timeout`, `transport_unreachable`, `transport_reset`, `transport_other`, `context_budget_exceeded`, `thinking_budget_exhausted`, `empty_response`, `format_invalid`, `model_not_installed`, `model_load_failed`. Retried: `http_5xx`, `transport_reset` only; `model_load_failed` is reclassified from a 5xx whose JSON `error` string has a load marker and is not retried.
+- `Test-OllamaModelLoad -Execution -Registry [-Transport]` returns `{loaded, category, hint, durationMs}`; one attempt, no telemetry; member list pinned (AC-333). It has no `httpStatus` or detail (gate finding 13: B3/B4 use fixed wording or decide to add members).
+- `scripts/lib/telemetry.ps1`: telemetry is LOCKED (A1): mutex `Global\AiHarnessTelemetry-<16 hex>`, one `FileStream` per file, `Write-HarnessModelTelemetry [-LockWaitMs]` (default 10000). `Read-HarnessModelTelemetry -Root [-FromOffset] [-LengthOnly] [-LockWaitMs]` returns `{Exists, Length, Lines, LockTimedOut}`; `-Root` is the harness root (not `logs`) and must be ABSOLUTE; `LockTimedOut` is also true for a refused name. v2 = 31 columns (14 legacy then 17); JSONL `logs\model-calls.jsonl`, CSV beside it. B6 reworks the retry budget (one deadline), `AppendData` and the CSV share-deny (FR-311c).
 - `scripts/lib/config.ps1`: `Get-HarnessRegistry` (390), `Get-HarnessRegistryModels` (398), `Resolve-HarnessExecution` (426).
 - `.ai/config.json` `schemaVersion` 2: profiles `fast` (qwen3.5:9b, 16384, reserved 4096), `deep`, `review` (reserved 6144); agents `spec`=fast, `spec-reviewer`=review, `spec-reviser`=deep, `developer`=deep; agent files in `.ai\agents\`.
 - The eight legacy scripts and `AI_HARNESS_MODEL`, `AI_HARNESS_RUN_ID` keep their behavior (NFR-304).
@@ -61,7 +59,10 @@ Always useful: Execution Order L573-596 (needs and order), Affected Files L562-5
 
 - Windows PowerShell 5.1, ASCII only; change only the files of Affected Files.
 - Tests offline with the engine fake host (no Ollama, no network, writes only under TEMP, tripwire clean).
-- Expected `scripts\test-all.ps1` at `phase2-calibrated`: 19 discovered, 18 PASS, 1 skipped (`test-spec-integration.ps1`), result PASS WITH SKIPS.
+- Expected `scripts\test-all.ps1` at `phase3a-done`: 22 discovered, 21 PASS, 1 skipped (`test-spec-integration.ps1`).
+- Engine suites: `test-engine-callsites-run-agent.ps1`, `-review-spec.ps1`, `-revise-spec.ps1` (their case names are pinned by AC-323), `test-engine-signals.ps1` (A4: AC-331, 332, 333), helper `tests/lib/engine-fake-host.ps1` (fake host, `Invoke-Case`, `New-V2Config`, four guards; knows only `/api/tags` and `/api/generate`, B3 adds `/api/version`).
+- AC-322 (in `test-engine-callsites-run-agent.ps1`): no wrapper name in files git does not ignore under `scripts\` and `tests\`. AC-323: `tests\lib\compare-engine-case-names.ps1 -RunSuites` (about 3 min, NOT run by `test-all`; run in B9).
+- Existing assertions 3B may extend (FR-314): the function lists and parameter count in `test-agent-telemetry-v2.ps1`, the pinned lists in `test-agent-prompts.ps1` and `test-agent-exec.ps1`.
 - Sessions never push, reset, rebase, tag, amend or delete; the owner does Git remote work. One final `test-all` per package (owner cost rule; the gate itself runs it twice), then a report and STOP for review.
 - Mutation proofs only for the key rules the AC names (temporary edit, hash-checked revert).
 - Assumptions never become requirements; report ambiguity instead of inventing.

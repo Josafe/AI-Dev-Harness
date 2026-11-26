@@ -176,7 +176,7 @@ The CLI is a short-lived foreground process built to be killed at any moment: th
 
 **Source:** USER
 
-(a) Run ids are claimed atomically (FR-304). (b) Manifest writes are atomic, both sides retry (FR-305). (c) `Write-HarnessModelTelemetry` takes the named mutex `Global\AiHarnessTelemetry-<first 16 hex of SHA-256 of the lower-cased resolved log directory path>` around its whole file section (JSONL append, CSV header decision, CSV append) and appends **each file through one `FileStream`** (`Append`, `Write`, `FileShare.ReadWrite`) with a bounded retry on `IOException` until `-LockWaitMs` (new optional parameter, default 10000) is spent, instead of `Add-Content`; the bytes equal what `Add-Content -Encoding UTF8` wrote (BOM only when the file is created, CRLF). `AbandonedMutexException` counts as acquired; the mutex is released in a `finally`; if the `Global\` name is refused or the wait runs out it prints a `Write-Warning`, writes anyway relying on the retry, and never fails the call. No `Local\` fallback; records, columns and the CSV rule are unchanged. (d) `specify`, `review` and `revise` (not `scan` and `context`, which write only under `runs\<id>\`) hold `Global\AiHarnessArtifact-<first 16 hex of SHA-256 of the lower-cased resolved target path, `|`, the lower-cased name>` for the whole run, taken without waiting before any artifact is looked at (names never alias, FR-319, so the name is the family). Held or refused: exit 2 `artifact_in_use`, no artifact touched. The OS releases it when the holder dies (`AbandonedMutexException` counts as acquired). A mutex is recursive within a thread: one run per process.
+(a) Run ids are claimed atomically (FR-304). (b) Manifest writes are atomic, both sides retry (FR-305). (c) `Write-HarnessModelTelemetry` takes the named mutex `Global\AiHarnessTelemetry-<first 16 hex of SHA-256 of the lower-cased resolved log directory path>` around its whole file section (JSONL append, CSV header decision, CSV append) and appends **each file through one `FileStream`** (`Append`, `Write`, `FileShare.ReadWrite`) with a bounded retry on `IOException`, instead of `Add-Content`; **owner decision (gate 3A), option (a):** ONE deadline per call, `-LockWaitMs` (new optional parameter, default 10000), covers the mutex wait and the file writes together, and the CSV gets only a short bounded in-lock retry (about 1 s, then the CSV row is skipped with a warning; a stuck CSV never stalls the JSONL). The A1 code of 3A implements the other reading (a fresh budget per file, worst case about 30 s per call); package **B6** implements (a), together with `FileSystemRights.AppendData` for the append (gate finding 7) and the tolerance of a CSV that another program (Excel) holds open denying write sharing (finding 8, the short CSV retry above); the bytes equal what `Add-Content -Encoding UTF8` wrote (BOM only when the file is created, CRLF). `AbandonedMutexException` counts as acquired; the mutex is released in a `finally`; if the `Global\` name is refused or the wait runs out it prints a `Write-Warning`, writes anyway relying on the retry, and never fails the call. No `Local\` fallback; records, columns and the CSV rule are unchanged. (d) `specify`, `review` and `revise` (not `scan` and `context`, which write only under `runs\<id>\`) hold `Global\AiHarnessArtifact-<first 16 hex of SHA-256 of the lower-cased resolved target path, `|`, the lower-cased name>` for the whole run, taken without waiting before any artifact is looked at (names never alias, FR-319, so the name is the family). Held or refused: exit 2 `artifact_in_use`, no artifact touched. The OS releases it when the holder dies (`AbandonedMutexException` counts as acquired). A mutex is recursive within a thread: one run per process.
 
 ### FR-313 - Repository context in every stage (XR-03 rest, XR-04)
 
@@ -188,7 +188,7 @@ The CLI is a short-lived foreground process built to be killed at any moment: th
 
 **Source:** USER
 
-`Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` are removed from `lib\agent-exec.ps1`, with **all nine** `AC-216` cases of Context, the wrapper driver, the `Write-Host` exemption and the two pinned-list entries in `test-agent-prompts.ps1` (its NFR-203 scan then forbids `Write-Host` in the whole library), and the scan that no script names them (replaced by AC-322). This supersedes Phase 2 FR-202, AC-216 and AC-218 for these two functions only; the Phase 2 spec gets a one-line note and DF-202, DF-203 closed. These are the only authorized edits of existing assertions.
+`Invoke-HarnessGenerate` and `Test-HarnessModelAvailable` are removed from `lib\agent-exec.ps1`, with **all nine** `AC-216` cases of Context, the wrapper driver, the `Write-Host` exemption and the two pinned-list entries in `test-agent-prompts.ps1` (its NFR-203 scan then forbids `Write-Host` in the whole library), and the scan that no script names them (replaced by AC-322). This supersedes Phase 2 FR-202, AC-216 and AC-218 for these two functions only; the Phase 2 spec gets a one-line note and DF-202, DF-203 closed. The authorized edits of existing assertions are these removals plus four forced static or pinned edits: the A1 function list and parameter count (23 to 24) in `test-agent-telemetry-v2.ps1`, and the A4 pinned function lists in `test-agent-prompts.ps1` and `test-agent-exec.ps1`; 3B may extend those same lists when it adds functions or parameters, and no other existing assertion changes.
 
 ### FR-315 - Split `test-engine-callsites.ps1` by script
 
@@ -391,7 +391,7 @@ A run whose mock stage sleeps (handshake by an event file) is `running` while it
 
 Verifies: FR-310, FR-311.
 
-Two `specify` runs with different names on one target, each mock waiting for the other's start event file, both exit 0 with valid manifests and different ids; the telemetry file holds exactly the expected records with the right `run_id`. Two runs with the same target and name, the first held at an event file: the second exits 2 `artifact_in_use` and changes nothing under `.ai-harness\`; after the holder is killed a third succeeds. A relative and an absolute spelling, a trailing backslash and (where 8.3 names exist) a short-name alias of one target give the same lock. A live run with the same `harness.ollamaUrl` recorded `running` gives the later run `concurrent_run_detected`, and it succeeds. A `Global\` name the process may not open gives `artifact_in_use`. The test proves exclusion only for the overlap it builds.
+Two `specify` runs with different names on one target, each mock waiting for the other's start event file, both exit 0 with valid manifests and different ids; the telemetry file holds exactly the expected records with the right `run_id`. Two runs with the same target and name, the first held at an event file: the second exits 2 `artifact_in_use` and changes nothing under `.ai-harness\`; after the holder is killed while another process keeps the mutex open (the test opens the same name before killing), a third succeeds. A relative and an absolute spelling, a trailing backslash and (where 8.3 names exist) a short-name alias of one target give the same lock. A live run with the same `harness.ollamaUrl` recorded `running` gives the later run `concurrent_run_detected`, and it succeeds. A `Global\` name the process may not open gives `artifact_in_use`. The test proves exclusion only for the overlap it builds.
 
 ### AC-317 - Telemetry writer under overlap
 
@@ -399,7 +399,7 @@ Two `specify` runs with different names on one target, each mock waiting for the
 
 Verifies: FR-311.
 
-Four child processes each write 40 records (5 ms pause) to one temporary root: the JSONL has exactly 160 parsable lines with 160 distinct `call_id`; the CSV has 160 rows and one header. Two writers (40 each) that read the JSONL with the FR-307 rules after every write, plus a third process reading in a loop, lose no record (80). A new JSONL starts with a BOM and later appends add none, as `Add-Content -Encoding UTF8` did at `phase2-calibrated`. A writer with `-LockWaitMs` 300 against a child holding the mutex writes after the wait, prints a warning and exits 0. A holder killed while holding it does not block the next writer. The package report records that the same stress with the lock disabled (temporary edit, hash-checked revert) loses records.
+Four child processes each write 40 records (5 ms pause) to one temporary root: the JSONL has exactly 160 parsable lines with 160 distinct `call_id`; the CSV has 160 rows and one header. Two writers (40 each) that read the JSONL with the FR-307 rules after every write, plus a third process reading in a loop, lose no record (80). A new JSONL starts with a BOM and later appends add none, as `Add-Content -Encoding UTF8` did at `phase2-calibrated`. A writer with `-LockWaitMs` 300 against a child holding the mutex writes after the wait, prints a warning and exits 0. A holder killed while holding it, while another process keeps the mutex open, does not block the next writer (a holder that is the mutex's only handle takes the mutex with it, which is not the abandoned path). The package report records that the same stress with the lock disabled (temporary edit, hash-checked revert) loses records.
 
 ### AC-319 - Context in every stage
 
@@ -431,7 +431,7 @@ On the fake host with the real scripts: one `harness specify` run (spec, validat
 
 Verifies: FR-314.
 
-The syntax tree of `lib\agent-exec.ps1` defines neither wrapper; after dot-sourcing the three libraries `Get-Command` finds neither; no file under `scripts\` or `tests\` contains either name (built from fragments in the test); the nine wrapper cases and the driver are gone; the NFR-203 scan of `test-agent-prompts.ps1` has no function exemption and finds no `Write-Host` in the library; the pinned list equals Phase 2's minus the two names; the other AC-216 criteria pass.
+The syntax tree of `lib\agent-exec.ps1` defines neither wrapper; after dot-sourcing the three libraries `Get-Command` finds neither; no file under `scripts\` or `tests\` that git does not ignore (every file when git is unavailable) contains either name (built from fragments in the test); the nine wrapper cases and the driver are gone; the NFR-203 scan of `test-agent-prompts.ps1` has no function exemption and finds no `Write-Host` in the library; the pinned list equals Phase 2's minus the two names; the other AC-216 criteria pass.
 
 ### AC-323 - The suite split
 
@@ -565,7 +565,7 @@ Inverse of the `Verifies:` lines above; the two must stay identical (the final Q
 |---|---|---|
 | `scripts/harness.ps1`, `lib/cli.ps1`, `lib/workflow.ps1`, `lib/manifest.ps1`, `lib/run-manifest.schema.json` (new) | Parser; command handlers; workflow; ids, claim, manifest, status, validator; schema | FR-301 to FR-311, FR-313, FR-318, FR-319 |
 | `scripts/specify.ps1`, `review-spec.ps1`, `revise-spec.ps1`, `run-agent.ps1`, `scan-repository.ps1`, `lib/agent-exec.ps1`, `lib/telemetry.ps1` (modified) | Thin front end, `-Profile`, `-ContextFile`, warning lines, exclusion; wrappers removed, truncation warning, `model_load_failed`, `Test-OllamaModelLoad`, builder context part; mutex, `FileStream`, `-LockWaitMs`, locked read | FR-303, FR-307, FR-311, FR-313 to FR-318 |
-| `scripts/test-agent-prompts.ps1`, `test-agent-telemetry-v2.ps1`, `test-scan-repository.ps1` (modified); `test-engine-callsites.ps1` (deleted); three `test-engine-callsites-*` suites, `tests/lib/engine-fake-host.ps1`, `test-engine-signals.ps1` (new, A4: AC-331, AC-332, library half of AC-333; its cases cannot go into the three call-site suites, whose case names AC-323 pins), `test-harness-{cli,workflow,manifest,concurrency,context,e2e}.ps1` (new); `test-all.ps1` (only if needed) | FR-314 edits; new cases; the split; Phase 3 suites. A4 (RK-305) also edits fake `prompt_eval_count` values in `test-agent-exec.ps1`, the call-site suites and `engine-fake-host.ps1`, and two pinned function lists (`test-agent-prompts.ps1`, `test-agent-exec.ps1`); no expected value changes | FR-311 to FR-319 |
+| `scripts/test-agent-prompts.ps1`, `test-agent-telemetry-v2.ps1`, `test-scan-repository.ps1` (modified); `test-engine-callsites.ps1` (deleted); three `test-engine-callsites-*` suites, `tests/lib/engine-fake-host.ps1` (new in A3; modified in B3 for the `/api/version` route), `tests/lib/compare-engine-case-names.ps1` (new, A3: the AC-323 name check), `test-engine-signals.ps1` (new, A4: AC-331, AC-332, library half of AC-333; its cases cannot go into the three call-site suites, whose case names AC-323 pins), `test-harness-{cli,workflow,manifest,concurrency,context,e2e}.ps1` (new); `test-all.ps1` (only if needed) | FR-314 edits; new cases; the split; Phase 3 suites. A4 (RK-305) also edits fake `prompt_eval_count` values in `test-agent-exec.ps1`, the call-site suites and `engine-fake-host.ps1`, and two pinned function lists (`test-agent-prompts.ps1`, `test-agent-exec.ps1`); no expected value changes | FR-311 to FR-319 |
 | `tests/fixtures/`, `tests/mocks/` (new files); `.gitignore`, `README.md`, `specs/harness-phase-2-shared-engine.md` (modified); this spec, its notes, one report per package | Frozen baselines and mock stages; `runs/`, commands, exit codes; Phase 2 notes (FR-314, FR-317, DF-202, DF-203); traceability | FR-304, FR-308, FR-314, FR-317 |
 
 Not modified: `validate-spec.ps1`, `build-context.ps1`, `benchmark-models.ps1`, `.ai/*`, `AGENTS.md`, `tests/golden/*`, Phase 0 to 2 fixtures, the roadmap (OQ-322), every other suite.
@@ -587,10 +587,10 @@ One work package per unattended session. After each: `scripts/test-all.ps1` offl
 | 7 | **B3** Parser, `stages`, `config`, `doctor`, `validate`, unsupported stages | 5 | S / S | AC-301, AC-312, AC-314, AC-333 |
 | 8 | **B4** `specify`: layout, manifest, checkpoints, correlation, names, overwrite, protocol | 5, 6, 7 | O / O | AC-303, AC-305, AC-307, AC-308 (checkpoints), AC-310, AC-311, AC-313, AC-321, AC-327, AC-328 |
 | 9 | **B5** `review`, `revise`, live `status` and `list` | 8 | S / O | AC-334, AC-315 |
-| 10 | **B6** Artifact lock, concurrent runs | 8 | O / O | AC-316 |
+| 10 | **B6** Artifact lock, concurrent runs; also FR-311(c) option (a) (one deadline per call, short CSV retry), `FileSystemRights.AppendData` for the append, CSV write-share-deny tolerance (gate findings 3, 7, 8) | 8 | O / O | AC-316; abandoned-mutex test (the parent opens the same name before killing the holder) and its mutation "abandoned counts as not acquired" must fail |
 | 11 | **B7** `-ContextFile` and builders of reviewer and reviser | 8 | S / O | builder part of AC-319, AC-302 complete |
 | 12 | **B8** `scan`, `context`, `-Include`, exclusion | 11 | S / O | AC-319, AC-320 |
-| 13 | **B9** Every command unattended, footprint, README, regression | 1 to 12 | S / S | AC-306, AC-324, AC-325, AC-326 |
+| 13 | **B9** Every command unattended, footprint, README, regression | 1 to 12 | S / S | AC-306, AC-324, AC-325, AC-326; the AC-323 name check (`tests\lib\compare-engine-case-names.ps1`, with `-RunSuites`) |
 | 14 | Final QA by an independent session; approval; tag `phase3-done` | all | O | AC-301 to AC-334 |
 
 WP-2E is done (Phase 2 rev 3.5); no criterion needs a live model.
@@ -604,7 +604,7 @@ WP-2E is done (Phase 2 rev 3.5); no criterion needs a live model.
 ## Dependencies
 
 - Phase 2 complete and calibrated (tag `phase2-calibrated`); Phase 5 adds `develop`. Windows PowerShell 5.1; read-only `git` and `nvidia-smi` optional. No Ollama, network or new tool for any criterion.
-- The `test-all.ps1` contract, sandbox and tripwire; the engine fake host (moved by FR-315, with a `/api/version` route).
+- The `test-all.ps1` contract, sandbox and tripwire; the engine fake host (moved by FR-315; it knows only `/api/tags` and `/api/generate`, B3 adds the `/api/version` route).
 
 ## Risks and Rollback
 
@@ -612,7 +612,7 @@ WP-2E is done (Phase 2 rev 3.5); no criterion needs a live model.
 |---|---|---|
 | RK-301 | The extraction changes `specify.ps1` behavior. | AC-303, AC-330; Opus on B2. |
 | RK-302 | Offset correlation misattributes or misses a record. | `run_id` filter, locked read, a warning (AC-310). |
-| RK-303 | Mutex semantics (abandonment, refused `Global\`) are wrong. | AC-316, AC-317 with killed holders; Opus on A1, B6. |
+| RK-303 | Mutex semantics (abandonment, refused `Global\`) are wrong. | AC-316, AC-317 with a holder killed while another process keeps the mutex open; Opus on A1, B6. |
 | RK-304 | The context part changes reviewer behavior; the schema reader drifts. | Only with `-ContextFile` (AC-319); the validator reads the file (AC-309). |
 | RK-305 | The new engine rules break Phase 2 cases (a fake `prompt_eval_count` far below the prompt size); the constant 7 misfires on unusual text. | A4 lists every edited fake value, no expected value changes (AC-302); warning only (OQ-316, OQ-320). |
 

@@ -540,13 +540,28 @@ try {
         Assert-Equal "wrapper commands found after dot-sourcing" 0 @($found).Count
         $repositoryRoot = Split-Path -Parent $scriptsDirectory
         $naming = @()
-        foreach ($directory in @($scriptsDirectory, (Join-Path $repositoryRoot "tests"))) {
-            if (-not (Test-Path -LiteralPath $directory)) { continue }
-            foreach ($file in Get-ChildItem -LiteralPath $directory -File -Recurse) {
-                $text = [System.IO.File]::ReadAllText($file.FullName)
-                foreach ($name in $wrapperNames) {
-                    if ($text.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $naming += "$($file.Name) names $name" }
+        # Files git ignores (local backups) are not scanned; without git every file is.
+        $scanFiles = $null
+        if (Get-Command git -ErrorAction SilentlyContinue) {
+            $inside = & git -C $repositoryRoot rev-parse --is-inside-work-tree 2>$null
+            if ($LASTEXITCODE -eq 0 -and $inside -ceq 'true') {
+                $listed = & git -C $repositoryRoot --no-optional-locks ls-files -z --cached --others --exclude-standard -- scripts tests
+                if ($LASTEXITCODE -eq 0) {
+                    $scanFiles = @(($listed -join '') -split "`0" | Where-Object { $_ } | ForEach-Object { Join-Path $repositoryRoot $_ } | Where-Object { Test-Path -LiteralPath $_ -PathType Leaf })
                 }
+            }
+        }
+        if ($null -eq $scanFiles) {
+            $scanFiles = @()
+            foreach ($directory in @($scriptsDirectory, (Join-Path $repositoryRoot "tests"))) {
+                if (-not (Test-Path -LiteralPath $directory)) { continue }
+                $scanFiles += @(Get-ChildItem -LiteralPath $directory -File -Recurse | ForEach-Object { $_.FullName })
+            }
+        }
+        foreach ($filePath in $scanFiles) {
+            $text = [System.IO.File]::ReadAllText($filePath)
+            foreach ($name in $wrapperNames) {
+                if ($text.IndexOf($name, [System.StringComparison]::OrdinalIgnoreCase) -ge 0) { $naming += "$([System.IO.Path]::GetFileName($filePath)) names $name" }
             }
         }
         Assert-Equal "files naming a wrapper" "" ($naming -join "; ")

@@ -1,0 +1,152 @@
+guard 1 rejects a missing file
+guard 1 rejects invalid JSON
+guard 1 rejects v1 localhost URL
+guard 1 rejects v1 other URL
+guard 1 rejects v2 localhost URL
+guard 1 rejects v2 without URL
+guard 1 rejects v2 with only the v1 key
+guard 1 accepts configurations whose URL is the fake URL
+guard 4: no other HTTP route in the 6 copied scripts; Invoke-RestMethod only where allowed
+AC-201 run-agent run-nocontext-role-a: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through
+AC-201 run-agent run-context-role-a: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through
+AC-201 run-agent run-nocontext-role-b: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through
+AC-201 run-agent run-context-role-b: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through
+AC-201 run-agent: the context section is present only with -ContextFile (the empty line pair of the legacy quirk)
+run-agent with a v2 config (profile with think true): body members, think JSON true, timeouts, console markers
+run-agent with think false: the member is present and false; with a profile that has no think: no member
+run-agent -Profile beta and a v1 configuration: no think, no extra body member, legacy parameters and exit 0
+run-agent success adds no console line (no Category, Hint, Retrying or Warning), and creates a missing output directory
+run-agent trims -Model before the availability check and the request, as before
+run-agent strips <think> blocks from the answer exactly as before and trims
+FR-202 a configuration error: exit 1, registry_invalid, no request, no telemetry line
+FR-202 a blank -Model: exit 1, the legacy message, no request, no telemetry line
+FR-202 model not installed: legacy lines, Category and Hint, exit 1, no generation, one record with model_called false
+FR-202 model name that differs only in case is installed (exact, case-insensitive match)
+FR-202 /api/tags fails (transport_unreachable): the legacy 'not reachable' error, Category, exit 1, no generation, one record
+FR-202 /api/tags fails (timeout): the legacy 'not reachable' error, Category, exit 1, no generation, one record
+FR-202 /api/tags fails (transport_other): the legacy 'not reachable' error, Category, exit 1, no generation, one record
+AC-202 injected timeout: exit 1, OLLAMA ERROR block, timeout, one request, no output file, one record
+AC-202 HTTP 500 on every attempt: two requests, the Status and body lines, retry line, http_5xx, attempts 2, one record
+AC-202 HTTP 400: one request, Status 400, http_4xx, no retry line, one record
+AC-202 a connection reset on the first attempt, then success: two requests, exit 0, output file, one record, attempts 2
+AC-202 an empty response: exit 1, the legacy message, Category empty_response, no output file, one error record
+AC-202 an empty response with done_reason length: thinking_budget_exhausted, the same exit code and message
+AC-202 maxAttempts 1 disables the retry (one request, attempts 1)
+AC-202 the default transport reaches the fake with the profile's timeoutSec (AC-213 child-process part)
+AC-203 enforce: exit 1, Category context_budget_exceeded, one line per section, no generate, no warm-up, one record with model_called false
+AC-203 enforce with a context file: one line per section (11 parts)
+AC-203 warn: the same prompt is sent, one Warning line, exit 0, the record carries the warning
+AC-203 the default (no budgetMode key): the same prompt is sent, one Warning line, exit 0, the record carries the warning
+AC-203 a prompt that fits prints no Warning line and writes an empty warnings column
+WP-2D hook rule (F-07): the -OnRetry script block of run-agent.ps1 reads only its own parameters, and no -Transport, -Sleep or -ResponseCheck is passed
+AC-216 the parameter block of run-agent.ps1 equals the baseline list (names, types, mandatory flags, ValidateSet)
+AC-216 run-agent with no -Agent: exit 1 before any request or telemetry
+AC-216 run-agent with no -Task: exit 1 before any request or telemetry
+AC-216 run-agent with an invalid agent name: exit 1 before any request or telemetry
+AC-216 run-agent with an unknown agent: exit 1 before any request or telemetry
+AC-216 a missing context file: exit 1, the legacy message, no generation request
+AC-201 review-spec -Mode requirements: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+AC-201 review-spec -Mode baseline: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+AC-201 review-spec -Mode documentation: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+AC-201 revise-spec -Mode requirements: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+AC-201 revise-spec -Mode baseline: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+AC-201 revise-spec -Mode documentation: system and prompt equal the golden (CRLF -> LF comparison), inputs pass through, exit 0, one record
+FR-203 review-spec inputs with leading and trailing whitespace and a final newline appear in the system prompt byte for byte
+FR-203 revise-spec inputs with leading and trailing whitespace and a final newline appear in the system prompt byte for byte
+review-spec success: markers, Review Status line, the review on the console and in the output file, body members, think JSON true, timeouts, no added line
+revise-spec success: markers, the revision on the console and in the output file, body members, think JSON true, timeouts, no added line
+review-spec think false: the member is present and false; think default: no member, think_sent omitted
+review-spec -Profile beta and a v1 configuration: no think member, no extra body member, legacy parameters, exit 0
+review-spec trims -Model before the availability check and the request, as before
+review-spec strips <think> blocks from the answer exactly as before and trims
+revise-spec think false: the member is present and false; think default: no member, think_sent omitted
+revise-spec -Profile beta and a v1 configuration: no think member, no extra body member, legacy parameters, exit 0
+revise-spec trims -Model before the availability check and the request, as before
+revise-spec strips <think> blocks from the answer exactly as before and trims
+review-spec: a FAIL review exits 1 and still writes the output file; a lower-case status is accepted as before
+review-spec: an output file that cannot be written exits 2 with the legacy REVIEW OUTPUT ERROR lines
+revise-spec: an answer without a Status section is a success (no response check on the reviser)
+FR-202 review-spec a configuration error: the legacy exit, registry_invalid, no request, no telemetry line
+FR-202 review-spec a blank -Model: the legacy exit and message, no request, no telemetry line
+FR-202 review-spec a missing specification file: the legacy exit and message, no request, no telemetry line
+FR-202 review-spec an empty specification file: the legacy exit and message, no request, no telemetry line
+FR-202 revise-spec a configuration error: the legacy exit, registry_invalid, no request, no telemetry line
+FR-202 revise-spec a blank -Model: the legacy exit and message, no request, no telemetry line
+FR-202 revise-spec a missing specification file: the legacy exit and message, no request, no telemetry line
+FR-202 revise-spec an empty specification file: the legacy exit and message, no request, no telemetry line
+FR-202 revise-spec a missing or empty review file: a throw with the legacy message, no request, no telemetry line
+FR-202 review-spec model not installed: legacy lines, Category and Hint, the legacy exit, no generation, one record with model_called false
+FR-202 review-spec a model name that differs only in case is installed
+FR-202 review-spec /api/tags fails (transport_unreachable): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+FR-202 review-spec /api/tags fails (timeout): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+FR-202 review-spec /api/tags fails (transport_other): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+FR-202 revise-spec model not installed: legacy lines, Category and Hint, the legacy exit, no generation, one record with model_called false
+FR-202 revise-spec a model name that differs only in case is installed
+FR-202 revise-spec /api/tags fails (transport_unreachable): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+FR-202 revise-spec /api/tags fails (timeout): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+FR-202 revise-spec /api/tags fails (transport_other): the legacy 'not reachable' line, Category, the legacy exit, no generation, one record
+AC-202 review-spec injected timeout: the legacy exit, Category timeout, one request, no output file, one record
+AC-202 review-spec HTTP 500 on every attempt: two requests, the retry line, http_5xx with the server detail, attempts 2, one record
+AC-202 review-spec HTTP 400: one request, http_4xx, no retry line, one record
+AC-202 review-spec a connection reset on the first attempt, then success: two requests, the legacy success exit, output file, one record, attempts 2
+AC-202 review-spec an empty response: the legacy exit and message, Category empty_response, no output file, one error record
+AC-202 review-spec an empty response with done_reason length: thinking_budget_exhausted, the same exit code and message
+AC-202 review-spec maxAttempts 1 disables the retry (one request, attempts 1)
+AC-214 review-spec the localized exception message of a failed request never reaches the console or the record (OQ-214)
+AC-202 revise-spec injected timeout: the legacy exit, Category timeout, one request, no output file, one record
+AC-202 revise-spec HTTP 500 on every attempt: two requests, the retry line, http_5xx with the server detail, attempts 2, one record
+AC-202 revise-spec HTTP 400: one request, http_4xx, no retry line, one record
+AC-202 revise-spec a connection reset on the first attempt, then success: two requests, the legacy success exit, output file, one record, attempts 2
+AC-202 revise-spec an empty response: the legacy exit and message, Category empty_response, no output file, one error record
+AC-202 revise-spec an empty response with done_reason length: thinking_budget_exhausted, the same exit code and message
+AC-202 revise-spec maxAttempts 1 disables the retry (one request, attempts 1)
+AC-214 revise-spec the localized exception message of a failed request never reaches the console or the record (OQ-214)
+AC-202 review-spec an answer without a valid Status section (no-section): the legacy exit and REVIEW VALIDATION ERROR lines, format_invalid, one request, no output file
+AC-202 review-spec an answer without a valid Status section (wrong-value): the legacy exit and REVIEW VALIDATION ERROR lines, format_invalid, one request, no output file
+AC-202 review-spec an answer without a valid Status section (not-a-heading): the legacy exit and REVIEW VALIDATION ERROR lines, format_invalid, one request, no output file
+AC-203 review-spec enforce: the legacy exit, Category context_budget_exceeded, one line per section, no generate, no warm-up, one record with model_called false
+AC-203 review-spec warn: the same prompt is sent, one Warning line, the legacy success exit, the record carries the warning
+AC-203 review-spec the default (no budgetMode key): the same prompt is sent, one Warning line, the legacy success exit, the record carries the warning
+AC-203 review-spec a prompt that fits prints no Warning line and writes an empty warnings column
+AC-203 revise-spec enforce: the legacy exit, Category context_budget_exceeded, one line per section, no generate, no warm-up, one record with model_called false
+AC-203 revise-spec warn: the same prompt is sent, one Warning line, the legacy success exit, the record carries the warning
+AC-203 revise-spec the default (no budgetMode key): the same prompt is sent, one Warning line, the legacy success exit, the record carries the warning
+AC-203 revise-spec a prompt that fits prints no Warning line and writes an empty warnings column
+AC-214 review-spec success record: every field of FR-216, literal expectations, run_id and call_id
+AC-214 review-spec run_id is a GUID when AI_HARNESS_RUN_ID is unset, and call_id differs between two calls
+AC-214 revise-spec success record: every field of FR-216, literal expectations, run_id and call_id
+AC-214 revise-spec run_id is a GUID when AI_HARNESS_RUN_ID is unset, and call_id differs between two calls
+N-14 run-agent.ps1 a warning other than budget_exceeded (output_truncated) prints no Warning line; exit 0, the record carries the warning
+N-14 review-spec.ps1 a warning other than budget_exceeded (output_truncated) prints no Warning line; exit 0, the record carries the warning
+N-14 revise-spec.ps1 a warning other than budget_exceeded (output_truncated) prints no Warning line; exit 0, the record carries the warning
+N-15 run-agent failure block: the lines are consecutive in the order OLLAMA ERROR, Status, detail, Category, Hint, END
+N-15 run-agent a failure without an HTTP status: no Status line, the block is OLLAMA ERROR, detail, Category, Hint, END
+N-15 run-agent budget refusal: Category, Hint, the Estimated line, then the section lines
+N-15 run-agent.ps1 the hint of transport_reset (reset) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of http_4xx (4xx) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of empty_response (empty) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of thinking_budget_exhausted (exhausted) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of transport_other (other) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of transport_unreachable (unreachable) follows its Category line and names the category's own wording
+N-15 review-spec.ps1 the hint of transport_unreachable (unreachable) follows its Category line and names the category's own wording
+N-15 revise-spec.ps1 the hint of transport_unreachable (unreachable) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of timeout (tags-timeout) follows its Category line and names the category's own wording
+N-15 review-spec.ps1 the hint of timeout (tags-timeout) follows its Category line and names the category's own wording
+N-15 revise-spec.ps1 the hint of timeout (tags-timeout) follows its Category line and names the category's own wording
+N-15 run-agent.ps1 the hint of model_not_installed (not-installed) follows its Category line and names the category's own wording
+N-15 review-spec.ps1 the hint of model_not_installed (not-installed) follows its Category line and names the category's own wording
+N-15 revise-spec.ps1 the hint of model_not_installed (not-installed) follows its Category line and names the category's own wording
+N-15 review-spec.ps1 the hint of http_5xx follows its Category line
+N-15 revise-spec.ps1 the hint of http_5xx follows its Category line
+N-15 review-spec.ps1 the hint of timeout follows its Category line
+N-15 revise-spec.ps1 the hint of timeout follows its Category line
+N-15 review-spec failure blocks: OLLAMA ERROR, the failed-request line, Category, Hint; REVIEWER OUTPUT ERROR, message, Category, Hint
+N-15 review-spec validation block: the Expected lines come first, then Category and Hint (format_invalid hint)
+N-15 revise-spec failure: Category, then Hint (the thrown text goes to the error stream)
+AC-216 the parameter block of review-spec.ps1 equals the baseline list (names, types, mandatory flags, ValidateSet, default)
+AC-216 the parameter block of revise-spec.ps1 equals the baseline list (names, types, mandatory flags, ValidateSet, default)
+AC-216 review-spec and revise-spec reject a -Mode outside the ValidateSet before any request or record
+WP-2D hook rule (F-07): the -OnRetry script block of review-spec.ps1 reads only its own parameters, and no -Transport or -Sleep is passed
+WP-2D hook rule (F-07): the -OnRetry script block of revise-spec.ps1 reads only its own parameters, and no -Transport or -Sleep is passed
+WP-2D hook rule (F-07): the -ResponseCheck script block of review-spec.ps1 reads only its own parameter
+AC-322 the wrappers are gone: not defined in agent-exec.ps1, no command in the libraries, no file under scripts\ or tests\ names them (FR-314)
